@@ -214,11 +214,18 @@ jobs:
                 | jq -r '.[0].result.aggregateFields.n.integerValue // "?"') |"
             done
           } >> "$GITHUB_STEP_SUMMARY"
+          # Through the API: gcloud sets project labels only in alpha.
+          site_label() {
+            local u="https://cloudresourcemanager.googleapis.com/v3/projects/$PROJECT" l
+            l=$(curl -fsS -H "Authorization: Bearer $TOKEN" "$u" | jq -c --arg v "$1" '{labels: ((.labels // {}) + {"drill-site": $v})}') \
+              && curl -fsS -X PATCH -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' "$u?updateMask=labels" -d "$l" >/dev/null \
+              || echo "::warning::could not set drill-site=$1 on $PROJECT"
+          }
           if [ "$fail" = "0" ]; then
-            gcloud projects update "$PROJECT" --update-labels=drill-site=passed --quiet >/dev/null || true
+            site_label passed
             echo "REBUILD DRILL PASSED: $URL"
           else
-            gcloud projects update "$PROJECT" --update-labels=drill-site=failed --quiet >/dev/null || true
+            site_label failed
             echo "::error::REBUILD DRILL FAILED"
           fi
           exit "$fail"

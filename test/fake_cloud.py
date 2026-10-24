@@ -48,6 +48,9 @@ def gcloud(args):
             return 1  # a person's login cannot ask for extra scopes
         print("fake-token")
         return 0
+    if pos[:2] == ["projects", "update"] and any(f.startswith(("--update-labels", "--clear-labels")) for f in flags):
+        print("ERROR: (gcloud.projects.update) unrecognized arguments: (labels are alpha-only)", file=sys.stderr)
+        return 2
     if pos[:2] == ["projects", "describe"]:
         if "projectNumber" in " ".join(flags):
             print("123456")
@@ -230,6 +233,12 @@ def route(method, url, data):
     if "accounts:batchCreate" in url:
         Path(LOG.parent / "batchCreate.json").write_text(json.dumps(data))
         return 200, {}
+    if "cloudresourcemanager.googleapis.com/v3/projects/" in url:
+        if method == "PATCH":
+            with open(LOG.parent / "labels.log", "a") as f:
+                f.write(json.dumps(data.get("labels", {}), sort_keys=True) + "\n")
+            return 200, {"name": "operations/labels", "done": True}
+        return 200, {"labels": json.loads(os.environ.get("FAKE_LABELS", "{}"))}
     if "secretmanager" in url:
         return 200, {"secrets": [{"name": "projects/x/secrets/RESEND_API_KEY"}, {"name": "projects/x/secrets/EVM_RELAYER_KEY"}]}
     return 200, {}

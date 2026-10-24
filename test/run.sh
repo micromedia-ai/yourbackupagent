@@ -123,6 +123,42 @@ expect "users imported with the hash key" '[ "$(jq -c "[.hashAlgorithm, (.users 
 expect "media restored into the drill's default bucket" '[ -f "$T/gcs/demo-drill.firebasestorage.app/products/a.webp" ]'
 expect "placeholder secrets from the inventory, KMS key created" 'grep -q "secrets create RESEND_API_KEY --project demo-drill" "$T/calls.log" && grep -q "kms keys create user-wallets" "$T/calls.log"'
 
+# --- prune / delete: the newest KEEP_MIN_SETS good sets are always kept --------------------------
+R="$T/gcs/demo-app-backups/runs"
+mkset() { mkdir -p "$R/$1/firestore"; echo x >"$R/$1/firestore/data"; [ -z "$2" ] || printf '%s' "$2" >"$R/$1/manifest.json"; }
+for d in 01 02 03 04 05; do mkset "202001${d}T020000Z" '{"status":"succeeded"}'; done
+mkset 20200106T020000Z '{"status":"failed"}'
+mkset 20200107T020000Z ''
+mkset 20200108T020000Z 'not json'
+left() { ls "$R" | tr '\n' ' '; }
+KEEP_MIN_SETS=3 bk prune --dry-run
+expect "prune --dry-run lists sets and deletes nothing" '[ $? -eq 0 ] && grep -q "delete 20200101T020000Z succeeded older than 14 days" "$T/out" && [ -d "$R/20200101T020000Z" ]' "$T/out"
+KEEP_MIN_SETS=3 bk prune --yes
+expect "prune keeps the newest 3 good sets, the recent failed one and the unreadable one" \
+  '[ $? -eq 0 ] && [ "$(left)" = "20200104T020000Z 20200105T020000Z 20200108T020000Z $ID $ID2 " ]' "$T/out"
+KEEP_MIN_SETS=3 bk delete --run 20200104T020000Z --yes
+expect "delete refuses a good set when only the minimum is left" '[ $? -ne 0 ] && grep -q "at least 3 are always kept" "$T/out" && [ -d "$R/20200104T020000Z" ]' "$T/out"
+KEEP_MIN_SETS=2 bk delete --run 20200104T020000Z --yes
+expect "delete removes a good set above the minimum" '[ $? -eq 0 ] && [ ! -d "$R/20200104T020000Z" ]' "$T/out"
+KEEP_MIN_SETS=9 bk delete --run "$ID2" --yes
+expect "a failed set can always be deleted" '[ $? -eq 0 ] && [ ! -d "$R/$ID2" ]' "$T/out"
+bk delete --run 20991231T000000Z --yes
+expect "delete of a missing set is refused" '[ $? -ne 0 ] && grep -q "cannot read" "$T/out"' "$T/out"
+bk delete --yes;          expect "delete needs --run" '[ $? -ne 0 ] && grep -q "delete needs --run" "$T/out"' "$T/out"
+bk check --vault;         expect "--vault only goes with prune or delete" '[ $? -ne 0 ] && grep -q "only goes with prune or delete" "$T/out"' "$T/out"
+mkdir -p "$T/gcs/demo-vault-offsite/runs/20200101T020000Z" && echo '{"status":"succeeded"}' >"$T/gcs/demo-vault-offsite/runs/20200101T020000Z/manifest.json"
+: >"$T/calls.log"
+KEEP_MIN_SETS=1 bk prune --vault --yes
+expect "prune --vault works as the vault owner on the off-site copies" \
+  '[ $? -eq 0 ] && [ ! -d "$T/gcs/demo-vault-offsite/runs/20200101T020000Z" ] && [ -d "$T/gcs/demo-vault-offsite/runs/$ID" ] && grep -q "storage rm -r gs://demo-vault-offsite/runs/20200101T020000Z" "$T/calls.log" && grep -q "gcloud --account=vault@example.com storage rm" "$T/out"' "$T/out"
+sleep 1
+KEEP_MIN_SETS=1 bk run --yes
+expect "a good run prunes old sets after itself" '[ $? -eq 0 ] && [ ! -d "$R/20200105T020000Z" ] && [ -d "$R/20200108T020000Z" ] && [ -d "$R/$ID" ]' "$T/out"
+sleep 1
+mkset 20200109T020000Z '{"status":"succeeded"}'
+FAKE_FAIL='accounts:batchGet' KEEP_MIN_SETS=1 bk run --yes
+expect "a failed run deletes nothing" '[ $? -ne 0 ] && [ -d "$R/20200109T020000Z" ]' "$T/out"
+
 # --- archive / retire guard ---------------------------------------------------------------------
 FAKE_LABELS='{"drill-of":"demo-app","drill-run":"x","drill-data":"passed"}' bk retire --yes
 expect "retire refuses without a drill of the newest archive" '[ $? -ne 0 ] && grep -q -E "no archive of demo-app|has not passed a rebuild drill" "$T/out"' "$T/out"

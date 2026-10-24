@@ -1,0 +1,8 @@
+node_modules/
+dist/
+e2e/screens/
+functions/.env.*
+functions/.env.local
+functions/.secret.local
+*.log
+.firebase/

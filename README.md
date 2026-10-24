@@ -55,11 +55,22 @@ services). `vault-secrets` keeps a copy of chosen secrets in the vault.
 
 | Copy | Kept | Who can delete it |
 |---|---|---|
-| `gs://<project>-backups` in the project | `BACKUP_KEEP_DAYS` (14) + 30 days soft delete | project owners |
+| `gs://<project>-backups` in the project | `BACKUP_KEEP_DAYS` (14), never fewer than the newest `KEEP_MIN_SETS` (7) good sets, + 30 days soft delete | project owners (GitHub prunes after each good run) |
 | Google-managed Firestore backups (`protect`) | `MANAGED_KEEP_DAYS` (14) | project owners |
 | Firestore point-in-time recovery (`protect`) | 7 days, any minute | project owners |
 | Off-site: `gs://<OFFSITE_BUCKET>` in the vault project | `OFFSITE_KEEP_DAYS` (90) + 30 days soft delete | the vault owner only; GitHub may only add files |
 | Archive: `gs://<ARCHIVE_BUCKET>/archive/<project>/<id>/` | for good (Archive storage class) | the vault owner only |
+
+Old sets are deleted by `backup.sh prune`, which `run` calls after every
+good backup (never after a failed one): the newest `KEEP_MIN_SETS` good sets
+are always kept whatever their age, other good sets go after
+`BACKUP_KEEP_DAYS`, failed or incomplete sets after 3 days, and a set whose
+manifest cannot be read is never deleted. `backup.sh delete --run <id>`
+deletes one set, and refuses a good one when only `KEEP_MIN_SETS` are left.
+`--vault` (as the vault owner) does the same for the off-site copies; there
+the bucket's `OFFSITE_KEEP_DAYS` age rule stays as a backstop, because GitHub
+may not delete in the vault. Before v1.1 the project bucket had an age rule
+on `runs/`; run `backup.sh setup` once after moving to v1.1 to remove it.
 
 The vault project (`VAULT_PROJECT`) and the drill project (`DRILL_PROJECT`)
 are shared by every project and owned by `VAULT_ACCOUNT`, a Google account

@@ -1,0 +1,15 @@
+rules_version = '2';
+// The manager app: people on the access list (config/access.emails) may read.
+// Nobody writes from the browser: every change goes through the API, which
+// logs it first. So the log can be added to, never edited or deleted.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function allowed() {
+      return request.auth != null && request.auth.token.email_verified == true
+        && exists(/databases/$(database)/documents/config/access)
+        && get(/databases/$(database)/documents/config/access).data.emails.hasAny([request.auth.token.email.lower()]);
+    }
+    match /{path=**}/sets/{id} { allow read: if allowed(); allow write: if false; }
+    match /{document=**} { allow read: if allowed(); allow write: if false; }
+  }
+}

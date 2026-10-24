@@ -76,6 +76,7 @@ def gcloud(args):
             t = dst / f.relative_to(src)
             t.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy(f, t)
+            print(f"Copying {pos[2]}/{f.relative_to(src)} to {pos[3]}/{f.relative_to(src)}", file=sys.stderr)
         return 0
     if pos[:3] == ["storage", "objects", "list"]:
         p = local(pos[3].removesuffix("/**"))

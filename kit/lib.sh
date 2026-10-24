@@ -93,6 +93,26 @@ retry() {
 # rrun: run (printed, skipped in --dry-run) with retries. Repeat-safe steps only.
 rrun() { retry run "$@"; }
 
+# Like run, for copies that print a line per file: that output would list data
+# paths in the log, so it is kept back and only its last lines are shown, on
+# failure.
+qrun() {
+  printf '  + %s\n' "$*" >&2
+  if [ "$DRY_RUN" = "1" ]; then
+    return 0
+  fi
+  local out
+  out="$(mktemp "${TMPDIR:-/tmp}/backup-kit-out.XXXXXX")" || return 1
+  if "$@" >"$out" 2>&1; then
+    rm -f "$out"
+    return 0
+  fi
+  tail -n 5 "$out" >&2
+  rm -f "$out"
+  return 1
+}
+rqrun() { retry qrun "$@"; }
+
 valid_project() { [[ "$1" =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]$ ]]; }
 valid_bucket()  { [[ "$1" =~ ^[a-z0-9][a-z0-9._-]{1,61}[a-z0-9]$ ]]; }
 valid_run_id()  { [[ "$1" =~ ^[0-9]{8}T[0-9]{6}Z$ ]]; }

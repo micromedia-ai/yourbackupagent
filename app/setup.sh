@@ -153,6 +153,10 @@ cmd_grant() {
 cmd_deploy() {
   info "Deploy the manager app to $APP_PROJECT"
   need firebase "npm install -g firebase-tools; firebase login:add $OWNER"
+  # Since 2026-10 new projects get no default Hosting site; create it once.
+  if ! "${F[@]}" hosting:sites:get "$APP_PROJECT" --project "$APP_PROJECT" >/dev/null 2>&1; then
+    run "${F[@]}" hosting:sites:create "$APP_PROJECT" --project "$APP_PROJECT"
+  fi
   (cd "$APP_DIR" && run npm ci && run npm run build && cd functions && run npm ci --omit=dev)
   printf 'RUNNER_SA=%s\nOWNER_EMAILS=%s\n' "$RUNNER_SA" "$OWNER" >"$APP_DIR/functions/.env.$APP_PROJECT"
   (cd "$APP_DIR" && run "${F[@]}" deploy --project "$APP_PROJECT" --only hosting,firestore,functions --force)

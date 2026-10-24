@@ -95,9 +95,14 @@ if [ -n "$VAULT" ] && ! accounts | grep -qx "$VAULT"; then
   say "  Log in as $VAULT (owns the vault and the drill project)"
   run gcloud auth login "$VAULT"
 fi
-is_owner() {
-  gcloud projects get-iam-policy "$PROJECT_ID" --account "$1" --format=json 2>/dev/null \
-    | jq -e --arg m "user:$1" '[.bindings[]? | select(.role == "roles/owner") | .members[]] | index($m)' >/dev/null
+is_owner() { # IAM keeps the case the owner was added with (user:Dagan.Gilat@...)
+  local policy
+  if ! policy="$(gcloud projects get-iam-policy "$PROJECT_ID" --account "$1" --format=json 2>&1)"; then
+    say "  $1 cannot read $PROJECT_ID's permissions: $(printf '%s' "$policy" | grep -m1 ERROR || true)"
+    return 1
+  fi
+  printf '%s' "$policy" | jq -e --arg m "user:$1" \
+    '[.bindings[]? | select(.role == "roles/owner") | .members[] | ascii_downcase] | index($m | ascii_downcase)' >/dev/null
 }
 OWNER=""
 for a in $(gcloud config get-value account 2>/dev/null) $(accounts); do

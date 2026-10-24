@@ -1,0 +1,6 @@
+{
+  "indexes": [
+    { "collectionGroup": "log", "queryScope": "COLLECTION", "fields": [ { "fieldPath": "project", "order": "ASCENDING" }, { "fieldPath": "at", "order": "DESCENDING" } ] }
+  ],
+  "fieldOverrides": []
+}

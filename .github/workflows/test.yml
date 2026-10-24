@@ -17,3 +17,39 @@ jobs:
         run: shellcheck -x -S warning kit/backup.sh kit/lib.sh test/run.sh templates/backup-kit-wrapper.sh
       - name: Offline tests (fake Google Cloud)
         run: test/run.sh
+
+  app:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - name: shellcheck
+        run: shellcheck -S warning setup.sh runner/entry.sh runner/test.sh
+      - name: Install
+        run: npm ci && (cd functions && npm ci)
+      - name: Typecheck and build
+        run: npm run build
+      - name: Unit tests
+        run: npm test
+      - name: Runner entry test
+        run: runner/test.sh
+      - name: End-to-end (emulators, fake GitHub, real browser)
+        run: |
+          npm install --no-save playwright@1 firebase-tools@14
+          npx playwright install --with-deps chromium
+          FIREBASE_BIN="npx firebase" node e2e/run.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: app-screens
+          path: app/e2e/screens

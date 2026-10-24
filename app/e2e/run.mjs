@@ -1,0 +1,245 @@
+// Offline end-to-end test of the manager app: the real web app (built for the
+// emulators), the real API (functions emulator), Firestore and Auth emulators,
+// backup sets in the Storage emulator, and a fake GitHub/Cloud Run. Drives a
+// real browser through every page and action, and saves screenshots.
+//
+// Usage: node e2e/run.mjs   (needs firebase-tools: FIREBASE_BIN or npx)
+// What it cannot prove: Google IAM, the real GitHub API, the Cloud Run job.
+import { spawn, execSync } from 'node:child_process';
+import { writeFileSync, mkdirSync, rmSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { startFakes } from './fake-apis.mjs';
+
+const { chromium } = createRequire(import.meta.url)('playwright');
+
+const APP = new URL('..', import.meta.url).pathname;
+const SHOTS = process.env.SHOTS || `${APP}e2e/screens`;
+const FIREBASE = process.env.FIREBASE_BIN || 'npx firebase-tools@14';
+const ST = 'http://127.0.0.1:9199';
+const results = [];
+const check = (name, ok, extra = '') => { results.push({ name, ok }); console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}${ok ? '' : ` ${extra}`}`); };
+
+function runId(hoursAgo) {
+  return new Date(Date.now() - hoursAgo * 3600000).toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
+}
+const manifest = (id, status, docs) => ({
+  kit: 1.1, project: 'demo-fn', id, trigger: 'schedule', status, startedAt: new Date().toISOString(), finishedAt: new Date(Date.now() + 600000).toISOString(),
+  steps: { firestore: 'ok', storage: 'ok', auth: status === 'failed' ? 'failed' : 'ok', rtdb: 'ok', config: 'ok', offsite: status === 'failed' ? undefined : 'ok' },
+  firestore: { '(default)': { collections: { users: 34, polls: docs } } }, storage: { 'demo-fn.firebasestorage.app': { objects: 872 } },
+  auth: { users: 34 }, errors: status === 'failed' ? ['auth: batchGet 500'] : [],
+});
+
+async function put(bucket, name, data) {
+  const r = await fetch(`${ST}/upload/storage/v1/b/${bucket}/o?uploadType=media&name=${encodeURIComponent(name)}`, {
+    method: 'POST', headers: { authorization: 'Bearer owner', 'content-type': 'application/octet-stream' }, body: data,
+  });
+  if (!r.ok) throw new Error(`upload ${bucket}/${name}: ${r.status} ${await r.text()}`);
+}
+async function list(bucket, prefix) {
+  const r = await fetch(`${ST}/storage/v1/b/${bucket}/o?prefix=${encodeURIComponent(prefix)}`, { headers: { authorization: 'Bearer owner' } });
+  return ((await r.json()).items || []).map((i) => i.name);
+}
+
+async function waitFor(url, ms = 120000) {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    try { if ((await fetch(url)).status < 500) return; } catch {}
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  throw new Error(`timeout waiting for ${url}`);
+}
+
+const PORTS = [9099, 8086, 5001, 9199, 5055, 4400, 4500];
+async function portsFree(ms = 60000) {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    const busy = [];
+    for (const p of PORTS) { try { await fetch(`http://127.0.0.1:${p}/`); busy.push(p); } catch {} }
+    if (!busy.length) return;
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  throw new Error('emulator ports still busy (an earlier run is still stopping)');
+}
+
+function freePorts() {
+  for (const p of [...PORTS, 4401, 4501, 9150, 9151]) { try { execSync(`fuser -k -n tcp ${p}`, { stdio: 'ignore' }); } catch {} }
+}
+
+async function main() {
+  freePorts();
+  await portsFree();
+  // Functions settings for the emulator only (removed afterwards).
+  writeFileSync(`${APP}functions/.env.local`, 'GITHUB_API=http://127.0.0.1:4999\nFAKE_GOOGLE_API=http://127.0.0.1:4999\nRUNNER_SA=runner@demo-yba.iam.gserviceaccount.com\nOWNER_EMAILS=dagan.gilat@gmail.com\nSTORAGE_EMULATOR_HOST=http://127.0.0.1:9199\n');
+  writeFileSync(`${APP}functions/.secret.local`, 'GITHUB_TOKEN=fake-token\n');
+  execSync('npx vite build', { cwd: APP, stdio: 'inherit', env: { ...process.env, VITE_USE_EMULATORS: 'true' } });
+  const fakes = await startFakes();
+  const emu = spawn('sh', ['-c', `${FIREBASE} emulators:start --project demo-yba`], { cwd: APP, stdio: ['ignore', 'pipe', 'pipe'] });
+  let emuLog = '';
+  emu.stdout.on('data', (d) => { emuLog += d; });
+  emu.stderr.on('data', (d) => { emuLog += d; });
+  try {
+    const end = Date.now() + 180000;
+    while (!emuLog.includes('All emulators ready') && Date.now() < end) await new Promise((r) => setTimeout(r, 1000));
+    await waitFor('http://127.0.0.1:5055/');
+
+    // Backup sets: 5 good + 1 failed in the project bucket, the 5 good in the vault.
+    const good = [1, 25, 49, 73, 97].map(runId);
+    const failed = runId(0.5);
+    for (const [i, id] of good.entries()) {
+      for (const b of ['demo-fn-backups', 'demo-vault-fn']) {
+        await put(b, `runs/${id}/firestore/(default)/export.overall_export_metadata`, 'x'.repeat(1000 * (i + 1)));
+        await put(b, `runs/${id}/manifest.json`, JSON.stringify(manifest(id, 'succeeded', 3 + i)));
+      }
+    }
+    await put('demo-fn-backups', `runs/${failed}/manifest.json`, JSON.stringify(manifest(failed, 'failed', 0)));
+
+    const browser = await chromium.launch();
+    const ctx = await browser.newContext({ viewport: { width: 1280, height: 860 } });
+    const page = await ctx.newPage();
+    globalThis.__page = page;
+    page.on('pageerror', (e) => console.log('page error:', e.message));
+    page.on('console', (m) => m.type() === 'error' && console.log('console:', m.text()));
+    page.on('requestfailed', (r) => console.log('requestfailed:', r.url()));
+    await page.goto('http://127.0.0.1:5055/');
+    await page.getByText('Sign in with Google').waitFor();
+    await page.screenshot({ path: `${SHOTS}/0-sign-in.png` });
+
+    await page.evaluate(() => window.__testSignIn('dagan.gilat@gmail.com'));
+    await page.getByRole('heading', { name: 'Overview' }).waitFor({ timeout: 30000 });
+    check('owner signs in and passes the access check', true);
+
+    await page.getByRole('button', { name: 'Refresh now' }).click();
+    await page.getByText('Refreshed every project.').waitFor({ timeout: 60000 });
+    const card = page.locator('.pcard', { hasText: 'Foundation Next' });
+    await card.waitFor();
+    check('refresh reads the project from its repository backup.env', true);
+    check('health is shown (newest run failed -> warning)', (await card.textContent()).includes('The newest run failed'), await card.textContent());
+    check('drill slot shows who holds the drill project', await page.getByText('holds a drill of other-app').count() > 0);
+    await page.screenshot({ path: `${SHOTS}/1-overview.png`, fullPage: true });
+
+    await card.click();
+    await page.getByRole('heading', { name: 'Foundation Next' }).waitFor();
+    await page.locator('table.sets tbody tr').first().waitFor();
+    const rows = await page.locator('table.sets tbody tr').count();
+    check('project page lists all 6 sets', rows === 6, String(rows));
+    await page.screenshot({ path: `${SHOTS}/2-project.png`, fullPage: true });
+
+    // Delete the two oldest good sets with min 3: allowed for one... check refusal first.
+    const oldest = good.slice(-3);
+    for (const id of oldest) await page.locator(`#sel-${id}`).check();
+    await page.getByRole('button', { name: /Delete 3 selected/ }).click();
+    check('deleting 3 of 5 good sets with minimum 3 is refused in the page', await page.getByText(/Not allowed: would leave 2 good sets/).count() > 0);
+    await page.screenshot({ path: `${SHOTS}/3-delete-refused.png` });
+    await page.getByRole('button', { name: 'Close' }).click();
+    await page.locator(`#sel-${oldest[0]}`).uncheck();
+
+    // Delete 2 (project + vault): leaves 3 good in both.
+    await page.getByRole('button', { name: /Delete 2 selected/ }).click();
+    await page.locator('#where-both').check();
+    await page.locator('#confirm-delete').fill('delete 2');
+    await page.getByRole('button', { name: 'Delete 2', exact: true }).click();
+    await page.getByText(/Deleted 2 project and 2 vault copies/).waitFor({ timeout: 60000 });
+    await page.getByRole('button', { name: 'Close' }).click();
+    const leftP = await list('demo-fn-backups', 'runs/');
+    const leftV = await list('demo-vault-fn', 'runs/');
+    check('the 2 sets are gone from the project bucket', !leftP.some((n) => oldest.slice(1).some((id) => n.includes(id))) && leftP.some((n) => n.includes(good[0])));
+    check('and from the vault (deleted with the owner\'s own token)', !leftV.some((n) => oldest.slice(1).some((id) => n.includes(id))) && leftV.some((n) => n.includes(good[0])));
+
+    // Restore dialog: rebuild drill into the drill project, replacing other-app's drill.
+    await page.locator('tr', { hasText: good[0] }).getByRole('button', { name: 'Restore…' }).click();
+    await page.locator('#replace').check();
+    await page.getByRole('button', { name: 'Start rebuild drill' }).click();
+    await page.getByText(/Rebuild drill started/).waitFor({ timeout: 30000 });
+    await page.getByRole('button', { name: 'Close' }).click();
+    const job = fakes.calls.find((c) => c.path.endsWith('/jobs/kit-runner:run'));
+    const ov = job && job.body.overrides.containerOverrides[0];
+    const env = ov ? Object.fromEntries(ov.env.map((e) => [e.name, e.value])) : {};
+    check('rebuild starts the runner job with the kit command', ov && ov.args.join(' ') === `rebuild --run ${good[0]} --yes --replace`, JSON.stringify(ov && ov.args));
+    check('the job gets the repository backup.env, the kit version and its log line', Buffer.from(env.BACKUP_ENV_B64 || '', 'base64').toString().includes('PROJECT_ID=demo-fn') && env.KIT_REF === 'v1.1' && /^log\/\w+$/.test(env.LOG_DOC || ''));
+    await page.locator('tr', { hasText: good[0] }).getByRole('button', { name: 'Restore…' }).click();
+    await page.locator('#t-prod').check();
+    check('production restore is a command to run, not a button', (await page.locator('.code pre').textContent()).includes(`backup-kit/backup.sh restore --to demo-fn --run ${good[0]}`));
+    await page.screenshot({ path: `${SHOTS}/4-restore.png` });
+    await page.getByRole('button', { name: 'Close' }).click();
+
+    await page.getByRole('button', { name: 'Back up now' }).click();
+    await page.getByText(/Backup started in GitHub/).waitFor({ timeout: 30000 });
+    const disp = fakes.calls.find((c) => c.path.endsWith('/backup.yml/dispatches'));
+    check('back up now starts the project\'s Backup workflow', disp && disp.body.inputs.action === 'run' && disp.body.ref === 'main');
+
+    await page.goto('http://127.0.0.1:5055/log');
+    await page.locator('.log li').first().waitFor();
+    const logText = await page.locator('.log').textContent();
+    for (const a of ['delete sets', 'delete vault copies', 'rebuild drill', 'back up now', 'nightly backup', 'create access list']) {
+      check(`log has "${a}"`, logText.includes(a), '');
+    }
+    await page.screenshot({ path: `${SHOTS}/5-log.png`, fullPage: true });
+
+    await page.goto('http://127.0.0.1:5055/reports');
+    await page.getByRole('heading', { name: 'Reports' }).waitFor();
+    await page.locator('svg.chart').first().waitFor();
+    check('reports draw charts', await page.locator('svg.chart').count() >= 3);
+    await page.screenshot({ path: `${SHOTS}/6-reports.png`, fullPage: true });
+
+    await page.goto('http://127.0.0.1:5055/protect');
+    await page.getByRole('button', { name: 'List my Firebase repositories' }).click();
+    await page.locator('#repo-dagangilat\\/your-content-creator').check();
+    check('protect lists Firebase repositories only', await page.getByText('dagangilat/notes').count() === 0 && await page.getByText('not protected').count() === 1);
+    await page.getByRole('button', { name: 'Open the pull request' }).click();
+    await page.getByText('One-time setup for yourcontentcreator-f7ef5').waitFor({ timeout: 30000 });
+    const tree = fakes.calls.find((c) => c.path === '/repos/dagangilat/your-content-creator/git/trees');
+    const envFile = tree && tree.body.tree.find((f) => f.path === 'backup-kit/backup.env');
+    check('the pull request carries the kit files, filled in', envFile && /PROJECT_ID=yourcontentcreator-f7ef5/.test(envFile.content) && /KEEP_MIN_SETS=7/.test(envFile.content) && /OFFSITE_BUCKET=yourbackupagent-yourcontentcreator/.test(envFile.content)
+      && tree.body.tree.some((f) => f.path === '.github/workflows/backup.yml' && f.content.includes('secrets.FIREBASE_SERVICE_ACCOUNT_YCC') && f.content.includes('yourbackupagent@v1.1')));
+    await page.screenshot({ path: `${SHOTS}/7-protect.png`, fullPage: true });
+
+    await page.goto('http://127.0.0.1:5055/settings');
+    await page.locator('#min-demo-fn').fill('5');
+    await page.getByRole('button', { name: 'Open pull request' }).click();
+    await page.getByText('Pull request opened. Merge it to apply.').waitFor({ timeout: 30000 });
+    const minTree = fakes.calls.filter((c) => c.path === '/repos/dagangilat/foundation-next/git/trees').pop();
+    check('changing the minimum opens a pull request with KEEP_MIN_SETS=5', minTree && /KEEP_MIN_SETS=5/.test(minTree.body.tree[0].content));
+    await page.screenshot({ path: `${SHOTS}/8-settings.png`, fullPage: true });
+
+    // Phone width.
+    const phone = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2 });
+    const pp = await phone.newPage();
+    await pp.goto('http://127.0.0.1:5055/');
+    await pp.getByText('Sign in with Google').waitFor();
+    await pp.evaluate(() => window.__testSignIn('dagan.gilat@gmail.com'));
+    await pp.locator('.pcard', { hasText: 'Foundation Next' }).waitFor({ timeout: 30000 }).catch(() => {});
+    await pp.screenshot({ path: `${SHOTS}/9-phone-overview.png`, fullPage: true });
+    await pp.goto('http://127.0.0.1:5055/projects/demo-fn');
+    await pp.locator('table.sets tbody tr').first().waitFor({ timeout: 30000 }).catch(() => {});
+    await pp.screenshot({ path: `${SHOTS}/10-phone-project.png`, fullPage: true });
+    check('phone: project page shows the sets', await pp.locator('table.sets tbody tr').count() > 0);
+    const wide = await pp.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
+    check('phone: no sideways page scroll', !wide);
+
+    // A stranger is refused.
+    const other = await browser.newContext();
+    const op = await other.newPage();
+    await op.goto('http://127.0.0.1:5055/');
+    await op.getByText('Sign in with Google').waitFor();
+    await op.evaluate(() => window.__testSignIn('stranger@example.com'));
+    await op.getByText(/not on the access list/).waitFor({ timeout: 30000 });
+    check('someone not on the access list is refused', true);
+    await browser.close();
+  } catch (e) {
+    check('test ran to the end', false, e.stack);
+    try { await globalThis.__page?.screenshot({ path: `${SHOTS}/failure.png` }); console.log('body:', (await globalThis.__page?.textContent('body'))?.slice(0, 500)); } catch {}
+    console.log(emuLog.split('\n').slice(-40).join('\n'));
+  } finally {
+    emu.kill('SIGINT');
+    fakes.server.close();
+    await new Promise((r) => setTimeout(r, 3000));
+    rmSync(`${APP}functions/.env.local`, { force: true });
+    rmSync(`${APP}functions/.secret.local`, { force: true });
+  }
+  const bad = results.filter((r) => !r.ok);
+  console.log(`\n${results.length - bad.length} passed, ${bad.length} failed`);
+  process.exit(bad.length ? 1 : 0);
+}
+
+mkdirSync(SHOTS, { recursive: true });
+main();

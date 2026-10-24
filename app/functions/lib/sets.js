@@ -83,8 +83,12 @@ export function canDelete(sets, ids, keepMin) {
   return { ok: true, goodAfter: goodNow - goodGone };
 }
 
-// health(sets, {maxAgeHours, offsite, now}) -> {level: ok|warn|bad, text, ...}
-export function health(sets, { maxAgeHours = 26, offsite = true, now = new Date() } = {}) {
+const gb = (n) => `${(n / 1e9).toFixed(n >= 1e10 ? 0 : 1)} GB`;
+
+// health(sets, {maxAgeHours, offsite, now, maxSetBytes, maxTotalBytes, totalBytes})
+//   -> {level: ok|warn|bad, text, ...}. The size limits are "watch" levels: a
+//   set or the project's backups growing past them is a warning, never an error.
+export function health(sets, { maxAgeHours = 26, offsite = true, now = new Date(), maxSetBytes = 0, maxTotalBytes = 0, totalBytes = 0 } = {}) {
   const sorted = [...sets].sort((a, b) => (a.id < b.id ? 1 : -1));
   const good = sorted.filter((s) => s.status === 'succeeded');
   if (good.length === 0) return { level: 'bad', text: sorted.length ? 'No good backup' : 'No backups yet', goodCount: 0 };
@@ -94,5 +98,8 @@ export function health(sets, { maxAgeHours = 26, offsite = true, now = new Date(
   if (ageHours > maxAgeHours) return { ...base, level: 'bad', text: `Newest good backup is ${ageHours}h old` };
   if (sorted[0].status === 'failed') return { ...base, level: 'warn', text: 'The newest run failed' };
   if (offsite && newestGood.steps && newestGood.steps.offsite !== 'ok') return { ...base, level: 'warn', text: 'Off-site copy missing' };
+  const setBytes = newestGood.bytes || 0;
+  if (maxSetBytes && setBytes > maxSetBytes) return { ...base, level: 'warn', text: `Newest set is ${gb(setBytes)} (watch level ${gb(maxSetBytes)})` };
+  if (maxTotalBytes && totalBytes > maxTotalBytes) return { ...base, level: 'warn', text: `Backups take ${gb(totalBytes)} (watch level ${gb(maxTotalBytes)})` };
   return { ...base, level: 'ok', text: 'Healthy' };
 }

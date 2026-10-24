@@ -7,11 +7,12 @@ import { useBusy } from '../components/ui';
 
 export function Settings() {
   const access = useDoc<{ emails: string[] }>('config/access');
-  const settings = useDoc<{ repos: string[]; defaultMinSets: number }>('config/settings');
+  const settings = useDoc<{ repos: string[]; defaultMinSets: number; sizeWarnSetGB?: number; sizeWarnTotalGB?: number }>('config/settings');
   const { rows: projects } = useProjects();
   const [emails, setEmails] = useState('');
   const [repos, setRepos] = useState('');
   const [min, setMin] = useState(7);
+  const [watch, setWatch] = useState({ set: 2, total: 20 });
   const [perProject, setPerProject] = useState<Record<string, number>>({});
   const { busy, run, banner } = useBusy();
   const { rows: requests } = useRequests();
@@ -33,6 +34,7 @@ export function Settings() {
     if (settings !== undefined) {
       setRepos(((settings && settings.repos) || ['dagangilat/foundation-next']).join('\n'));
       setMin((settings && settings.defaultMinSets) || 7);
+      setWatch({ set: settings?.sizeWarnSetGB ?? 2, total: settings?.sizeWarnTotalGB ?? 20 });
     }
   }, [settings]);
 
@@ -45,7 +47,7 @@ export function Settings() {
         <h4>Email alerts</h4>
         <p className="small">Sent from backups@plantagoai.com through Resend. Checked after the nightly refresh at 05:30 UTC; drill results go out as soon as a drill ends.</p>
         <div className="checks">
-          {([['health', 'A project needs attention (failed, too old, off-site copy missing)'], ['recoveries', 'It is healthy again'], ['drills', 'A rebuild or restore drill passed or failed'], ['weekly', 'A summary every Monday']] as const).map(([key, text]) => (
+          {([['health', 'A project needs attention (failed, too old, off-site copy missing, past its size watch level)'], ['recoveries', 'It is healthy again'], ['drills', 'A rebuild or restore drill passed or failed'], ['weekly', 'A summary every Monday']] as const).map(([key, text]) => (
             <label key={key} className="check"><input type="checkbox" id={`n-${key}`} checked={n[key]} onChange={(e) => setN({ ...n, [key]: e.target.checked })} /> {text}</label>
           ))}
         </div>
@@ -82,6 +84,15 @@ export function Settings() {
         </table></div>
         <label>For newly protected projects <input type="number" id="default-min" min={1} max={999} value={min} onChange={(e) => setMin(Number(e.target.value))} /></label>
         <button className="btn" disabled={!!busy} onClick={() => run('save', async () => { await call('saveSettings', { defaultMinSets: min }); return { text: 'Saved.' }; })}>Save</button>
+      </section>
+      <section className="panel">
+        <h4>Backup size watch</h4>
+        <p className="small">Every set is a full copy (database and all media), so storage grows with the project. A project past either level shows as needing attention and, with email alerts on, you get an email. 0 turns a level off.</p>
+        <div className="row wrap">
+          <label>One set, newest (GB) <input type="number" id="watch-set" min={0} step={0.5} value={watch.set} onChange={(e) => setWatch({ ...watch, set: Number(e.target.value) })} /></label>
+          <label>All sets of a project, here and in the vault (GB) <input type="number" id="watch-total" min={0} step={1} value={watch.total} onChange={(e) => setWatch({ ...watch, total: Number(e.target.value) })} /></label>
+        </div>
+        <button className="btn" disabled={!!busy} onClick={() => run('watch', async () => { await call('saveSettings', { sizeWarnSetGB: watch.set, sizeWarnTotalGB: watch.total }); return { text: 'Saved. It applies from the next refresh.' }; })}>Save</button>
       </section>
       <section className="panel">
         <h4>Repositories</h4>

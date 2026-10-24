@@ -61,3 +61,13 @@ test('backup.env parsing and editing', () => {
   assert.equal(parseEnv(setEnvValue(text, 'BACKUP_KEEP_DAYS', '30')).BACKUP_KEEP_DAYS, '30');
   assert.ok(setEnvValue(text, 'BACKUP_KEEP_DAYS', '30').startsWith('# c\n'));
 });
+
+test('health: size watch levels warn, 0 turns them off', () => {
+  const set = (id, bytes) => ({ id, status: 'succeeded', bytes, steps: { offsite: 'ok' } });
+  const sets = [set('20261024T020000Z', 2.4e9), set('20261023T020000Z', 2.3e9)];
+  const now = new Date('2026-10-24T05:00:00Z');
+  assert.equal(health(sets, { now, maxSetBytes: 2e9 }).text, 'Newest set is 2.4 GB (watch level 2.0 GB)');
+  assert.equal(health(sets, { now, maxSetBytes: 2e9 }).level, 'warn');
+  assert.equal(health(sets, { now, maxSetBytes: 3e9, maxTotalBytes: 20e9, totalBytes: 21e9 }).text, 'Backups take 21 GB (watch level 20 GB)');
+  assert.equal(health(sets, { now, maxSetBytes: 0, maxTotalBytes: 0, totalBytes: 99e9 }).level, 'ok');
+});

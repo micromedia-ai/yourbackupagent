@@ -227,6 +227,13 @@ async function main() {
     check('a finished drill is emailed right away', sent().some((s) => /^Rebuild drill passed: Foundation Next/.test(s)), JSON.stringify(sent()));
     await new Promise((r) => setTimeout(r, 5000));
     check('exactly once (the email log line does not trigger another)', sent().filter((s) => /^Rebuild drill/.test(s)).length === 1, String(sent().filter((s) => /^Rebuild drill/.test(s)).length));
+    // Size watch levels are saved for the next refresh (the health rule itself is unit tested).
+    await page.locator('#watch-set').fill('1.5');
+    await page.locator('#watch-total').fill('30');
+    await page.locator('section', { hasText: 'Backup size watch' }).getByRole('button', { name: 'Save' }).click();
+    await page.getByText('Saved. It applies from the next refresh.').waitFor({ timeout: 30000 });
+    const cfg = await (await fetch('http://127.0.0.1:8086/v1/projects/demo-yba/databases/(default)/documents/config/settings', { headers: { authorization: 'Bearer owner' } })).json();
+    check('size watch levels are saved', Number(cfg.fields?.sizeWarnSetGB?.doubleValue) === 1.5 && Number(cfg.fields?.sizeWarnTotalGB?.integerValue ?? cfg.fields?.sizeWarnTotalGB?.doubleValue) === 30, JSON.stringify(cfg.fields || cfg));
     await page.screenshot({ path: `${SHOTS}/8-settings.png`, fullPage: true });
 
     // Phone width.
@@ -256,7 +263,11 @@ async function main() {
     await op.getByRole('button', { name: 'Ask for access' }).click();
     await op.getByText(/Asked\. The owner got an email/).waitFor({ timeout: 30000 });
     await op.screenshot({ path: `${SHOTS}/11-ask-for-access.png` });
-    const ask = fakes.emails.find((e) => e.subject === 'stranger@example.com asks for access to YourBackupAgent');
+    // The page says "Asked" as soon as the request is stored; the email goes out right after.
+    const askT0 = Date.now();
+    const findAsk = () => fakes.emails.find((e) => e.subject === 'stranger@example.com asks for access to YourBackupAgent');
+    while (!findAsk() && Date.now() - askT0 < 15000) await new Promise((r) => setTimeout(r, 300));
+    const ask = findAsk();
     check('the owner is emailed about the request', ask && ask.to.join() === 'dagan.gilat@gmail.com' && ask.html.includes('I look after the shop'));
     await page.goto('http://127.0.0.1:5055/settings');
     await page.locator('.requests li', { hasText: 'stranger@example.com' }).getByRole('button', { name: 'Approve' }).click();

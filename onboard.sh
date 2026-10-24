@@ -72,7 +72,10 @@ else
   run gh repo clone "$REPO" "$WORK" -- -q
 fi
 ON_PR=0
-if git -C "$WORK" rev-parse -q --verify "refs/remotes/origin/$BRANCH" >/dev/null; then
+# Work on the protect branch only while its pull request is open: once it is
+# merged, a commit pushed there would never reach the default branch.
+if git -C "$WORK" rev-parse -q --verify "refs/remotes/origin/$BRANCH" >/dev/null \
+  && [ "$(gh pr view "$BRANCH" --repo "$REPO" --json state -q .state 2>/dev/null)" = OPEN ]; then
   run git -C "$WORK" checkout -q -B "$BRANCH" "origin/$BRANCH"
   ON_PR=1
 else
@@ -148,9 +151,10 @@ else
   if [ "$ON_PR" = 1 ]; then
     run git -C "$WORK" push -q origin "HEAD:$BRANCH"
   else
-    run git -C "$WORK" push -q origin "HEAD:$BRANCH"
+    BRANCH=yourbackupagent/ci-key
+    run git -C "$WORK" push -q -f origin "HEAD:refs/heads/$BRANCH"
     run gh pr create --repo "$REPO" --head "$BRANCH" --title "Backups: GitHub Actions key for YourBackupAgent" \
-      --body "Sets CI_SA to $SA and the Backup workflow's secret to $SECRET_NAME (made by onboard.sh)."
+      --body "Sets CI_SA to $SA and the Backup workflow's secret to $SECRET_NAME (made by onboard.sh). Merge it, or the nightly backup cannot sign in."
     ON_PR=1
   fi
 fi

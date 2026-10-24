@@ -106,6 +106,13 @@ expect "batchCreate body keeps hashes, claims, providers and drops output-only f
 bk drill --here --run "$ID"; expect "drill --here passes and deletes its database" '[ $? -eq 0 ] && grep -q "DRILL PASSED" "$T/out" && grep -q "firestore databases delete --database=drill-" "$T/calls.log"' "$T/out"
 expect "drill --here never imports into (default)" '! grep -q "(default):importDocuments" "$T/calls.log"'
 
+# --- rebuild refuses another project's drill --------------------------------------------------
+: >"$T/calls.log"
+FAKE_LABELS='{"drill-of":"other-app","drill-data":"passed"}' bk rebuild --data-only --yes
+expect "rebuild refuses while another project's drill is there" '[ $? -ne 0 ] && grep -q "in use by a drill of other-app" "$T/out" && ! grep -q "importDocuments" "$T/calls.log"' "$T/out"
+FAKE_LABELS='{"drill-of":"other-app","drill-data":"passed"}' bk rebuild --data-only --yes --replace
+expect "--replace takes it over" '[ $? -eq 0 ] && grep -q "DATA RESTORE PASSED" "$T/out"' "$T/out"
+
 # --- rebuild (data only) ---------------------------------------------------------------------
 : >"$T/calls.log"
 bk rebuild --data-only;   expect "rebuild restores the newest off-site run and passes" '[ $? -eq 0 ] && grep -q "DATA RESTORE PASSED" "$T/out" && grep -q "Restoring $ID from gs://demo-vault-offsite/runs/$ID into demo-drill" "$T/out"' "$T/out"

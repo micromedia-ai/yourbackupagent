@@ -1,8 +1,8 @@
 // Small SVG charts, one scale per chart, colors from the theme tokens.
 type Series = { label: string; color: string; values: (number | null)[] };
 
-export function Bars({ labels, series, unit, height = 150, flags = [] }: { labels: string[]; series: Series[]; unit: (v: number) => string; height?: number; flags?: boolean[] }) {
-  const W = 600, H = height, L = 52, B = 22, T = 8;
+export function Bars({ labels, series, unit, height = 150, width = 600, flags = [] }: { labels: string[]; series: Series[]; unit: (v: number) => string; height?: number; width?: number; flags?: boolean[] }) {
+  const W = width, H = height, L = 52, B = 22, T = 8;
   const totals = labels.map((_, i) => series.reduce((a, s) => a + (s.values[i] || 0), 0));
   const max = niceMax(Math.max(1, ...totals));
   const bw = (W - L - 4) / Math.max(1, labels.length);
@@ -35,8 +35,8 @@ export function Bars({ labels, series, unit, height = 150, flags = [] }: { label
   );
 }
 
-export function Line({ labels, values, unit, height = 120 }: { labels: string[]; values: number[]; unit: (v: number) => string; height?: number }) {
-  const W = 600, H = height, L = 52, B = 22, T = 10;
+export function Line({ labels, values, unit, height = 120, width = 600 }: { labels: string[]; values: number[]; unit: (v: number) => string; height?: number; width?: number }) {
+  const W = width, H = height, L = 52, B = 22, T = 10;
   if (values.length === 0) return <p className="muted">No data yet.</p>;
   const lo = Math.min(...values), hi = Math.max(...values);
   const pad = hi === lo ? Math.max(1, hi * 0.05) : (hi - lo) * 0.1;

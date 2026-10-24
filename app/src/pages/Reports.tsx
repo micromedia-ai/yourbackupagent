@@ -43,7 +43,7 @@ export function Reports() {
         const d = daily(sets, projects.map((p) => p.projectId), 30, (s) => s.durationSec ? s.durationSec / 60 : 0);
         return (
           <section className="panel"><h4>Run length per day (minutes)</h4>
-            <Bars labels={d.labels} flags={d.failed} unit={(v) => `${Math.round(v)}m`} series={projects.map((p, i) => ({ label: p.label, color: PROJECT_COLORS[i % 4], values: d.values[i] }))} />
+            <Bars width={1100} height={170} labels={d.labels} flags={d.failed} unit={(v) => `${Math.round(v)}m`} series={projects.map((p, i) => ({ label: p.label, color: PROJECT_COLORS[i % 4], values: d.values[i] }))} />
           </section>
         );
       })()}
@@ -53,10 +53,10 @@ export function Reports() {
           <section className="panel" key={p.projectId}>
             <h4>{p.label}</h4>
             <div className="split">
-              <div><span className="small muted">Documents</span><Line labels={good.map((s) => when(runDate(s.id)))} values={good.map((s) => s.docs || 0)} unit={(v) => num(Math.round(v))} /></div>
-              <div><span className="small muted">Size of one set</span><Line labels={good.map((s) => when(runDate(s.id)))} values={good.map((s) => s.project?.bytes || s.bytes)} unit={bytes} /></div>
-              <div><span className="small muted">Users</span><Line labels={good.map((s) => when(runDate(s.id)))} values={good.map((s) => s.users || 0)} unit={(v) => num(Math.round(v))} /></div>
-              <div><span className="small muted">Files</span><Line labels={good.map((s) => when(runDate(s.id)))} values={good.map((s) => s.files || 0)} unit={(v) => num(Math.round(v))} /></div>
+              <div><span className="small muted">Documents</span><Line labels={good.map((s) => when(runDate(s.id)))} values={good.map((s) => s.docs || 0)} unit={(v) => num(Math.round(v))} width={380} height={130} /></div>
+              <div><span className="small muted">Size of one set</span><Line labels={good.map((s) => when(runDate(s.id)))} values={good.map((s) => s.project?.bytes || s.bytes)} unit={bytes} width={380} height={130} /></div>
+              <div><span className="small muted">Users</span><Line labels={good.map((s) => when(runDate(s.id)))} values={good.map((s) => s.users || 0)} unit={(v) => num(Math.round(v))} width={380} height={130} /></div>
+              <div><span className="small muted">Files</span><Line labels={good.map((s) => when(runDate(s.id)))} values={good.map((s) => s.files || 0)} unit={(v) => num(Math.round(v))} width={380} height={130} /></div>
             </div>
           </section>
         );

@@ -1119,6 +1119,20 @@ cleanup_here() {
 # ---- the drill project ------------------------------------------------------
 dapi() { vapi "$1" "$2" "${3:-}" "$DRILL_PROJECT"; }
 
+# drill_labels '<json object>' | clear: merge labels into the drill project's
+# labels (or remove them all). Through the API: gcloud only has this in alpha.
+drill_labels() {
+  local url="https://cloudresourcemanager.googleapis.com/v3/projects/$DRILL_PROJECT" cur new
+  if [ "$1" = "clear" ]; then
+    new='{}'
+  else
+    cur="$(dapi GET "$url" 2>/dev/null | jq -c '.labels // {}')" || cur=""
+    [ -n "$cur" ] || cur='{}'
+    new="$(jq -c --argjson add "$1" '. + $add' <<<"$cur")"
+  fi
+  change vault PATCH "$url?updateMask=labels" "{\"labels\":$new}" "$DRILL_PROJECT" >/dev/null
+}
+
 ensure_drill_project() {
   local i op
   ensure_vault_project "$DRILL_PROJECT" "YourBackupAgent drill"
@@ -1186,7 +1200,7 @@ wipe_drill() {
       | jq -r --arg p "$DRILL_PROJECT" '.bindings[]? | select(.role == "roles/owner") | .members[] | select(startswith("serviceAccount:") and (endswith("@" + $p + ".iam.gserviceaccount.com") | not))'); do
     rrun "${GV[@]}" projects remove-iam-policy-binding "$DRILL_PROJECT" --member="$sa" --role=roles/owner --condition=None --quiet --format=none
   done
-  run "${GV[@]}" projects update "$DRILL_PROJECT" --clear-labels --quiet >/dev/null 2>&1 || true
+  drill_labels clear || warn "could not clear the labels of $DRILL_PROJECT"
 }
 
 # copy_drill_secrets <run manifest file> <gs://run path>: placeholders for every
@@ -1246,15 +1260,16 @@ cmd_rebuild() {
   ensure_drill_project
   wipe_drill
   # Claim the drill project first, so a rebuild from another project stops here.
-  run "${GV[@]}" projects update "$DRILL_PROJECT" --update-labels="drill-of=$PROJECT_ID,drill-data=running" --quiet >/dev/null || true
+  drill_labels "$(jq -nc --arg of "$PROJECT_ID" '{"drill-of": $of, "drill-data": "running"}')" || warn "could not label $DRILL_PROJECT as in use"
   restore_into vault "$DRILL_PROJECT" "$src"
   [ "$DRY_RUN" = "1" ] && { say "Dry run: nothing was restored."; return 0; }
   info "Restored copy against the backup's own counts"
   if compare_report; then
-    run "${GV[@]}" projects update "$DRILL_PROJECT" --update-labels="drill-of=$PROJECT_ID,drill-run=$(tr 'A-Z' 'a-z' <<<"$id"),drill-data=passed" --quiet >/dev/null || true
+    drill_labels "$(jq -nc --arg of "$PROJECT_ID" --arg run "$(tr 'A-Z' 'a-z' <<<"$id")" '{"drill-of": $of, "drill-run": $run, "drill-data": "passed"}')" \
+      || die "the data restore passed, but the drill-data=passed label on $DRILL_PROJECT could not be set (the site workflow checks it)"
     say "  DATA RESTORE PASSED"
   else
-    run "${GV[@]}" projects update "$DRILL_PROJECT" --update-labels="drill-of=$PROJECT_ID,drill-data=failed" --quiet >/dev/null || true
+    drill_labels "$(jq -nc --arg of "$PROJECT_ID" '{"drill-of": $of, "drill-data": "failed"}')" || true
     die "DATA RESTORE FAILED: counts differ (above). $DRILL_PROJECT is kept for a look."
   fi
   copy_drill_secrets "$src"

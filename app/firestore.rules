@@ -15,6 +15,7 @@ service cloud.firestore {
       allow read: if allowed() || (request.auth != null && request.auth.token.email_verified == true && request.auth.token.email.lower() == email);
       allow write: if false;
     }
-    match /{document=**} { allow read: if allowed(); allow write: if false; }
+    // mcp/ holds the MCP connector's sign-in records (hashes only): server only.
+    match /{col}/{document=**} { allow read: if allowed() && col != 'mcp'; allow write: if false; }
   }
 }

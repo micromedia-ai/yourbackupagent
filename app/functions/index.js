@@ -8,10 +8,11 @@
 // first and its result after; clients can only read the log.
 import { initializeApp } from 'firebase-admin/app';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
-import { onCall, HttpsError } from 'firebase-functions/v2/https';
+import { onCall, onRequest, HttpsError } from 'firebase-functions/v2/https';
 import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { onDocumentWritten } from 'firebase-functions/v2/firestore';
 import { defineSecret, defineString } from 'firebase-functions/params';
+import { createHash, randomBytes } from 'node:crypto';
 import { github } from './lib/github.js';
 import { listSets, deleteSet, drillLabels, runJob } from './lib/cloud.js';
 import { parseEnv, projectSettings, setEnvValue } from './lib/env.js';
@@ -19,6 +20,8 @@ import { canDelete, health, prunePlan, RUN_ID } from './lib/sets.js';
 import { lockBlocks, endsLock, LOCK_HOURS } from './lib/drilllock.js';
 import { firebaseProject, pickDeploySecret, kitFiles, setupCommands, TEMPLATE_PATHS, KIT_REPO } from './lib/protect.js';
 import { sendMail } from './lib/mail.js';
+import { createOAuth, OAuthError, resourceMetadata, authServerMetadata, resourceUrl } from './lib/oauth.js';
+import { handleMcp } from './lib/mcp.js';
 import { healthEvents, levels, drillFinished, healthEmail, drillEmail, weeklyEmail, accessRequestEmail, welcomeEmail, EMAIL_RE } from './lib/alerts.js';
 
 initializeApp();
@@ -346,7 +349,8 @@ export const invite = onCall(opts, async (req) => {
 });
 
 async function projectDoc(projectId) {
-  const d = await projectRef(String(projectId || '')).get();
+  if (!/^[a-z][a-z0-9-]{4,29}$/.test(String(projectId || ''))) throw new HttpsError('not-found', `Unknown project ${projectId || '(none)'}. See the overview for project ids.`);
+  const d = await projectRef(projectId).get();
   if (!d.exists) throw new HttpsError('not-found', `Unknown project ${projectId}. Refresh first.`);
   return d.data();
 }
@@ -357,9 +361,11 @@ function checkIds(ids) {
   }
 }
 
-export const act = onCall(opts, async (req) => {
-  const by = await requireUser(req);
-  const { action, project, runIds = [], replace = false } = req.data || {};
+export const act = onCall(opts, async (req) => runAction(await requireUser(req), req.data || {}));
+
+// What the Act buttons do, for the app and the MCP connector alike.
+async function runAction(by, data) {
+  const { action, project, runIds = [], replace = false } = data;
   const p = await projectDoc(project);
   const gh = github(GITHUB_TOKEN.value());
   switch (action) {
@@ -438,7 +444,7 @@ export const act = onCall(opts, async (req) => {
     default:
       throw new HttpsError('invalid-argument', `unknown action ${action}`);
   }
-});
+}
 
 // Vault copies are deleted in the browser with Dagan's own Google sign-in
 // (this service account cannot delete there). The page logs before and after.
@@ -581,3 +587,231 @@ function protectBody(repo, projectId, kitRef, secret, existing) {
     'Opened from the YourBackupAgent Manager.',
   ].join('\n');
 }
+
+// ---- MCP connector (lib/mcp.js, lib/oauth.js) ----------------------------------
+// https://<app>/mcp for an AI assistant such as Claude, signed in with OAuth as
+// someone on the access list. Its tools call the same code as the app's
+// buttons, so the same rules hold and every change is logged.
+
+async function isAllowed(email) {
+  return Boolean(email) && (await allowedEmails()).has(String(email).toLowerCase());
+}
+
+// OAuth records live under the server-only mcp/oauth document.
+const oauthStore = {
+  async get(col, id) { const s = await db.collection(col).doc(id).get(); return s.exists ? s.data() : null; },
+  async set(col, id, data) { await db.collection(col).doc(id).set(data); },
+  async update(col, id, data) { await db.collection(col).doc(id).update(data); },
+  async take(col, id) {
+    const ref = db.collection(col).doc(id);
+    return db.runTransaction(async (tx) => {
+      const s = await tx.get(ref);
+      if (!s.exists) return null;
+      tx.delete(ref);
+      return s.data();
+    });
+  },
+  async delete(col, id) { await db.collection(col).doc(id).delete(); },
+  async query(col, field, value) {
+    let q = db.collection(col);
+    if (field) q = q.where(field, '==', value);
+    return (await q.limit(500).get()).docs.map((d) => ({ id: d.id, data: d.data() }));
+  },
+  async purgeExpired(col, ms) {
+    const snap = await db.collection(col).where('expiresAt', '<', ms).limit(100).get();
+    if (snap.empty) return;
+    const batch = db.batch();
+    snap.docs.forEach((d) => batch.delete(d.ref));
+    await batch.commit();
+  },
+};
+
+const oauth = createOAuth({ store: oauthStore, now: () => Date.now(), random: () => randomBytes(32).toString('base64url'), isAllowed });
+
+// The address the request came in on, when it is this app's; else APP_URL.
+function publicBase(req) {
+  const app = new URL(APP_URL.value());
+  const host = String(req.headers['x-forwarded-host'] || req.hostname || '').split(',')[0].trim().toLowerCase();
+  if (host === app.host) return app.origin;
+  const id = process.env.GCLOUD_PROJECT;
+  if (host === `${id}.web.app` || host === `${id}.firebaseapp.com`) return `https://${host}`;
+  return app.origin;
+}
+
+// At most `limit` requests per window from one address (hashed).
+async function allowRate(key, limit, windowMs) {
+  const ref = db.collection('mcp/rate/hits').doc(createHash('sha256').update(key).digest('hex').slice(0, 40));
+  const now = Date.now();
+  return db.runTransaction(async (tx) => {
+    const cur = (await tx.get(ref)).data();
+    const fresh = !cur || now - cur.start > windowMs;
+    const count = fresh ? 1 : cur.count + 1;
+    tx.set(ref, { start: fresh ? now : cur.start, count, expiresAt: (fresh ? now : cur.start) + windowMs });
+    return count <= limit;
+  });
+}
+
+function oauthReply(res, e) {
+  res.set('Cache-Control', 'no-store');
+  if (e instanceof OAuthError) return res.status(e.status).json({ error: e.error, ...(e.description ? { error_description: e.description } : {}) });
+  console.error('[oauth] error', e?.message || String(e));
+  return res.status(500).json({ error: 'server_error' });
+}
+
+function basicClient(req) {
+  const m = String(req.headers.authorization || '').match(/^Basic (.+)$/i);
+  if (!m) return null;
+  const [id, ...rest] = Buffer.from(m[1], 'base64').toString('utf8').split(':');
+  return { id: decodeURIComponent(id || ''), secret: decodeURIComponent(rest.join(':')) };
+}
+
+const plainProject = (p) => ({
+  projectId: p.projectId, label: p.label, repo: p.repo, kitRef: p.kitRef, health: p.health, totals: p.totals || null,
+  keepMinSets: p.keepMinSets, keepDays: p.keepDays, maxAgeHours: p.maxAgeHours, backupBucket: p.backupBucket,
+  offsiteBucket: p.offsiteBucket || null, drillProject: p.drillProject || null, refreshedAt: p.refreshedAt || null,
+  errors: p.errors || [], wouldPrune: (p.prunePreview || []).length,
+});
+
+const mcpOps = {
+  async overview() {
+    const projects = (await db.collection('projects').get()).docs.map((d) => plainProject(d.data()));
+    const slot = (await db.doc('drill/slot').get()).data() || null;
+    const lock = (await db.doc('drill/lock').get()).data() || null;
+    return {
+      projects,
+      drillProject: slot && { project: slot.project, holdsDrillOf: (slot.labels && slot.labels['drill-of']) || null, labels: slot.labels || {} },
+      drillBusy: lockBlocks(lock),
+      appUrl: APP_URL.value(),
+    };
+  },
+  async sets(project, n) {
+    const p = await projectDoc(project);
+    const sets = (await knownSets(p.projectId)).sort((a, b) => (a.id < b.id ? 1 : -1)).slice(0, n);
+    return sets.map((s) => ({ id: s.id, status: s.status, startedAt: s.startedAt, docs: s.docs, files: s.files, users: s.users, bytes: s.bytes, durationSec: s.durationSec, inProject: s.inProject, inVault: s.inVault }));
+  },
+  async log(project, n) {
+    let q = db.collection('log');
+    if (project) q = q.where('project', '==', project);
+    const snap = await q.orderBy('at', 'desc').limit(n).get();
+    return snap.docs.map((d) => {
+      const l = d.data();
+      return { id: d.id, at: l.at, by: l.by, action: l.action, status: l.status, project: l.project || null, runIds: l.runIds || null, detail: l.detail || null, link: l.link || null };
+    });
+  },
+  refresh: () => refreshAll(GITHUB_TOKEN.value()),
+  act: runAction,
+  async preview({ action, project, runIds = [] }) {
+    const p = await projectDoc(project);
+    if (action === 'cleanup-drill') {
+      const slot = (await db.doc('drill/slot').get()).data() || {};
+      return { preview: true, wouldWipe: p.drillProject, holdsDrillOf: (slot.labels && slot.labels['drill-of']) || null, busy: lockBlocks((await db.doc('drill/lock').get()).data()) };
+    }
+    const known = await knownSets(p.projectId);
+    const fresh = await listSets(p.backupBucket, new Map(known.filter((s) => s.project).map((s) => [s.id, s.project])));
+    const ids = action === 'prune' ? prunePlan(fresh, { keepMin: p.keepMinSets, keepDays: p.keepDays }).map((x) => x.id) : runIds;
+    if (action === 'delete') checkIds(ids);
+    const verdict = ids.length ? canDelete(fresh, ids, p.keepMinSets) : { ok: true };
+    return { preview: true, project: p.projectId, where: `gs://${p.backupBucket}`, wouldDelete: ids, allowed: verdict.ok, reason: verdict.ok ? null : verdict.reason, keepMinSets: p.keepMinSets, vault: 'vault copies are not deleted here' };
+  },
+  async restoreCommand(project, runId) {
+    const p = await projectDoc(project);
+    checkIds([runId]);
+    const set = (await knownSets(p.projectId)).find((s) => s.id === runId);
+    if (!set) throw new HttpsError('not-found', `No set ${runId} in ${p.projectId}. See list_sets.`);
+    const name = p.repo.split('/')[1];
+    return {
+      note: 'Run this on your computer, in a checkout of the repository. Nothing is restored from here.',
+      command: [`cd ~/path/to/${name}`, 'backup-kit/backup.sh run          # a fresh backup first', `backup-kit/backup.sh restore --to ${p.projectId} --run ${runId}${set.inProject ? ` --from gs://${p.backupBucket}/runs` : ''}`].join('\n'),
+    };
+  },
+};
+
+const MCP_LIMIT_PER_10_MIN = 300;
+const REGISTER_LIMIT_PER_HOUR = 30;
+
+export const mcp = onRequest({ ...opts, invoker: 'public' }, async (req, res) => {
+  res.set('Access-Control-Allow-Origin', '*');
+  res.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, Mcp-Protocol-Version, Mcp-Session-Id');
+  res.set('Access-Control-Expose-Headers', 'WWW-Authenticate');
+  if (req.method === 'OPTIONS') return res.status(204).send('');
+  const path = (req.path || '/').replace(/\/+$/, '') || '/';
+  const base = publicBase(req);
+  const ip = String(req.headers['x-forwarded-for'] || req.ip || '').split(',')[0].trim();
+  if (path.startsWith('/.well-known/oauth-protected-resource') || path.startsWith('/.well-known/oauth-authorization-server')) {
+    if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
+    res.set('Cache-Control', 'public, max-age=300');
+    return res.json(path.includes('protected-resource') ? resourceMetadata(base) : authServerMetadata(base));
+  }
+  if (req.method !== 'POST') return res.status(405).set('Allow', 'POST').json({ error: 'Use POST with JSON-RPC (MCP streamable HTTP).' });
+  try {
+    if (path === '/mcp/oauth/register') {
+      if (!(await allowRate(`reg:${ip}`, REGISTER_LIMIT_PER_HOUR, 3600000))) return res.status(429).json({ error: 'too_many_requests' });
+      return res.status(201).json(await oauth.register(req.body));
+    }
+    if (path === '/mcp/oauth/token') {
+      res.set('Cache-Control', 'no-store');
+      if (!(await allowRate(`tok:${ip}`, MCP_LIMIT_PER_10_MIN, 600000))) return res.status(429).json({ error: 'too_many_requests' });
+      return res.json(await oauth.token(req.body, basicClient(req)));
+    }
+    if (path === '/mcp/oauth/revoke') {
+      await oauth.revokeToken(String((req.body && req.body.token) || '')).catch(() => {});
+      return res.status(200).json({});
+    }
+  } catch (e) {
+    return oauthReply(res, e);
+  }
+  if (path !== '/mcp') return res.status(404).json({ error: 'Not found' });
+  if (!(await allowRate(`mcp:${ip}`, MCP_LIMIT_PER_10_MIN, 600000))) {
+    return res.status(429).json({ jsonrpc: '2.0', id: null, error: { code: -32000, message: 'Rate limit exceeded' } });
+  }
+  const token = (String(req.headers.authorization || '').match(/^Bearer (.+)$/) || [])[1] || '';
+  const who = await oauth.verify(token);
+  if (!who) {
+    res.set('WWW-Authenticate', `Bearer resource_metadata="${base}/.well-known/oauth-protected-resource/mcp", scope="backups"`);
+    return res.status(401).json({ jsonrpc: '2.0', id: null, error: { code: -32001, message: 'Unauthorized' } });
+  }
+  const out = await handleMcp(req.body, {
+    ops: mcpOps,
+    by: `${who.email} via ${String(who.clientName || 'AI assistant').slice(0, 40)}`,
+    onToolCall: ({ name, ok }) => console.info('[mcp] tool', { name, ok }),
+  });
+  if (out === null) return res.status(202).send('');
+  return res.status(200).json(out);
+});
+
+// The /connect-ai page: someone on the access list taps Allow or Cancel.
+export const mcpConsent = onCall(opts, async (req) => {
+  const by = await requireUser(req);
+  const b = req.data || {};
+  const params = { clientId: b.client_id, redirectUri: b.redirect_uri, state: b.state, codeChallenge: b.code_challenge, codeChallengeMethod: b.code_challenge_method, resource: b.resource };
+  try {
+    if (b.action === 'describe') return await oauth.describe(params);
+    if (b.action === 'deny') return await oauth.deny(params);
+    if (b.action === 'approve') {
+      const { clientName } = await oauth.describe(params);
+      const out = await oauth.approve({ ...params, user: { uid: req.auth.uid, email: by } });
+      await db.collection('log').add({ at: FieldValue.serverTimestamp(), by, action: 'connect AI assistant', status: 'succeeded', detail: String(clientName).slice(0, 100) });
+      return out;
+    }
+  } catch (e) {
+    if (e instanceof OAuthError) throw new HttpsError(e.status === 401 ? 'unauthenticated' : 'invalid-argument', e.description || e.error);
+    throw e;
+  }
+  throw new HttpsError('invalid-argument', 'unknown action');
+});
+
+// Settings: connected assistants, and disconnecting one.
+export const mcpGrants = onCall(opts, async (req) => {
+  const by = await requireUser(req);
+  const { action, id } = req.data || {};
+  if (action === 'remove') {
+    if (!/^g_[A-Za-z0-9_-]{10,40}$/.test(String(id || ''))) throw new HttpsError('invalid-argument', 'invalid id');
+    const g = await oauthStore.get('mcp/oauth/grants', id);
+    await oauth.removeGrant(id);
+    await db.collection('log').add({ at: FieldValue.serverTimestamp(), by, action: 'disconnect AI assistant', status: 'succeeded', detail: g ? `${g.clientName} (${g.email})` : id });
+    return { removed: id };
+  }
+  const iso = (ms) => (typeof ms === 'number' ? new Date(ms).toISOString() : null);
+  const grants = (await oauth.listGrants()).map((g) => ({ ...g, createdAt: iso(g.createdAt), lastUsedAt: iso(g.lastUsedAt) }));
+  return { grants, url: resourceUrl(new URL(APP_URL.value()).origin) };
+});

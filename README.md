@@ -58,7 +58,7 @@ services). `vault-secrets` keeps a copy of chosen secrets in the vault.
 | `gs://<project>-backups` in the project | `BACKUP_KEEP_DAYS` (14), never fewer than the newest `KEEP_MIN_SETS` (7) good sets, + 30 days soft delete | project owners (GitHub prunes after each good run) |
 | Google-managed Firestore backups (`protect`) | `MANAGED_KEEP_DAYS` (14) | project owners |
 | Firestore point-in-time recovery (`protect`) | 7 days, any minute | project owners |
-| Off-site: `gs://<OFFSITE_BUCKET>` in the vault project | `OFFSITE_KEEP_DAYS` (90) + 30 days soft delete | the vault owner only; GitHub may only add files |
+| Off-site: `gs://<OFFSITE_BUCKET>` in the vault project | `OFFSITE_KEEP_DAYS` (90) + 30 days soft delete | the vault owner only; GitHub may add and read files, never delete |
 | Archive: `gs://<ARCHIVE_BUCKET>/archive/<project>/<id>/` | for good (Archive storage class) | the vault owner only |
 
 Old sets are deleted by `backup.sh prune`, which `run` calls after every

@@ -10,12 +10,15 @@ import { initializeApp } from 'firebase-admin/app';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { onSchedule } from 'firebase-functions/v2/scheduler';
+import { onDocumentWritten } from 'firebase-functions/v2/firestore';
 import { defineSecret, defineString } from 'firebase-functions/params';
 import { github } from './lib/github.js';
 import { listSets, deleteSet, drillLabels, runJob } from './lib/cloud.js';
 import { parseEnv, projectSettings, setEnvValue } from './lib/env.js';
 import { canDelete, health, prunePlan, RUN_ID } from './lib/sets.js';
 import { firebaseProject, pickDeploySecret, kitFiles, setupCommands, TEMPLATE_PATHS, KIT_REPO } from './lib/protect.js';
+import { sendMail } from './lib/mail.js';
+import { healthEvents, levels, drillFinished, healthEmail, drillEmail, weeklyEmail, accessRequestEmail, welcomeEmail, EMAIL_RE } from './lib/alerts.js';
 
 initializeApp();
 const db = getFirestore();
@@ -23,12 +26,15 @@ const db = getFirestore();
 const GITHUB_TOKEN = defineSecret('GITHUB_TOKEN');
 const RUNNER_SA = defineString('RUNNER_SA');
 const OWNER_EMAILS = defineString('OWNER_EMAILS', { default: 'dagan.gilat@gmail.com' });
+const RESEND_API_KEY = defineSecret('RESEND_API_KEY');
+const MAIL_FROM = defineString('MAIL_FROM', { default: 'YourBackupAgent <backups@plantagoai.com>' });
+const APP_URL = defineString('APP_URL', { default: 'https://yourbackupagent-app.web.app' });
 const REGION = 'us-central1';
 const JOB = 'kit-runner';
 const BACKUP_WORKFLOW = 'backup.yml';
 const DEFAULT_REPOS = ['dagangilat/foundation-next'];
 
-const opts = { region: REGION, secrets: [GITHUB_TOKEN], serviceAccount: RUNNER_SA, timeoutSeconds: 540, memory: '512MiB' };
+const opts = { region: REGION, secrets: [GITHUB_TOKEN, RESEND_API_KEY], serviceAccount: RUNNER_SA, timeoutSeconds: 540, memory: '512MiB' };
 
 // ---- access ----------------------------------------------------------------
 async function allowedEmails() {
@@ -37,9 +43,14 @@ async function allowedEmails() {
   return new Set([...OWNER_EMAILS.value().split(/[\s,]+/), ...listed].filter(Boolean).map((e) => e.toLowerCase()));
 }
 
-async function requireUser(req) {
+function signedIn(req) {
   const t = req.auth && req.auth.token;
   if (!t || !t.email || !t.email_verified) throw new HttpsError('unauthenticated', 'Sign in with Google first.');
+  return t;
+}
+
+async function requireUser(req) {
+  const t = signedIn(req);
   if (!(await allowedEmails()).has(t.email.toLowerCase())) throw new HttpsError('permission-denied', `${t.email} is not on the access list.`);
   return t.email;
 }
@@ -188,6 +199,142 @@ export const nightly = onSchedule({ ...opts, schedule: '30 5 * * *', timeZone: '
   const results = await refreshAll(GITHUB_TOKEN.value());
   const bad = results.filter((r) => r.error || (r.health && r.health.level === 'bad'));
   if (bad.length) console.error(`YourBackupAgent: ${bad.length} project(s) need attention: ${bad.map((b) => b.projectId || b.repo).join(', ')}`);
+  await checkAlerts('schedule');
+});
+
+// ---- email alerts ------------------------------------------------------------
+const NOTIFY_DEFAULTS = { health: true, recoveries: true, drills: true, weekly: true, recipients: null };
+
+async function notifySettings() {
+  const d = await db.doc('config/notify').get();
+  const n = { ...NOTIFY_DEFAULTS, ...(d.exists ? d.data() : {}) };
+  const access = [...await allowedEmails()];
+  n.recipients = (n.recipients || access).filter((e) => access.includes(e));
+  return n;
+}
+
+async function mail(to, msg, what, by = 'schedule') {
+  const ref = await logStart(by, `email: ${what}`, {});
+  try {
+    const r = await sendMail({ key: RESEND_API_KEY.value(), from: MAIL_FROM.value(), to, ...msg });
+    await logEnd(ref, r.skipped ? 'skipped' : 'succeeded', r.skipped || `sent to ${r.count} recipient(s): ${msg.subject}`);
+    return r;
+  } catch (e) {
+    await logEnd(ref, 'failed', e.message);
+    throw e;
+  }
+}
+
+// Compares every project's health with the last check and emails changes.
+async function checkAlerts(by) {
+  const n = await notifySettings();
+  const projects = (await db.collection('projects').get()).docs.map((d) => d.data());
+  const stateRef = db.doc('notify/state');
+  const prev = ((await stateRef.get()).data() || {}).levels || {};
+  const events = healthEvents(prev, projects).filter((e) => (e.kind === 'alert' ? n.health : n.recoveries));
+  await stateRef.set({ levels: levels(projects), checkedAt: FieldValue.serverTimestamp() }, { merge: true });
+  if (events.length) await mail(n.recipients, healthEmail(events, APP_URL.value()), events.some((e) => e.kind === 'alert') ? 'backups need attention' : 'backups recovered', by);
+  return events.map((e) => ({ kind: e.kind, project: e.project.projectId, level: e.level }));
+}
+
+// Drill results, as soon as a drill's log line finishes (from the runner job,
+// a GitHub drill run read on refresh, or the app).
+export const drillAlert = onDocumentWritten({ document: 'log/{id}', region: REGION, secrets: [RESEND_API_KEY], serviceAccount: RUNNER_SA }, async (ev) => {
+  const d = drillFinished(ev.data.before.exists ? ev.data.before.data() : null, ev.data.after.exists ? ev.data.after.data() : null);
+  if (!d) return;
+  const n = await notifySettings();
+  if (!n.drills) return;
+  const p = d.line.project ? (await projectRef(d.line.project).get()).data() : null;
+  await mail(n.recipients, drillEmail(d, p && p.label, APP_URL.value()), `drill ${d.passed ? 'passed' : 'failed'}`, 'drill');
+});
+
+async function weeklySummary(to, by) {
+  const projects = (await db.collection('projects').get()).docs.map((d) => d.data());
+  const setsByProject = {};
+  for (const p of projects) setsByProject[p.projectId] = await knownSets(p.projectId);
+  const since = new Date(Date.now() - 7 * 86400000);
+  const log = (await db.collection('log').where('at', '>=', since).get()).docs.map((d) => d.data());
+  return mail(to, weeklyEmail(projects, setsByProject, log, APP_URL.value()), 'weekly summary', by);
+}
+
+export const weekly = onSchedule({ ...opts, schedule: '0 6 * * 1', timeZone: 'UTC' }, async () => {
+  const n = await notifySettings();
+  if (n.weekly) await weeklySummary(n.recipients, 'schedule');
+});
+
+export const saveNotify = onCall(opts, async (req) => {
+  const by = await requireUser(req);
+  const { health: h, recoveries, drills, weekly: w, recipients } = req.data || {};
+  const patch = {};
+  for (const [k, v] of Object.entries({ health: h, recoveries, drills, weekly: w })) if (v !== undefined) patch[k] = Boolean(v);
+  if (recipients !== undefined) {
+    if (!Array.isArray(recipients) || !recipients.every((e) => EMAIL_RE.test(e))) throw new HttpsError('invalid-argument', 'recipients must be addresses');
+    patch.recipients = recipients.map((e) => e.toLowerCase());
+  }
+  await db.doc('config/notify').set(patch, { merge: true });
+  await db.collection('log').add({ at: FieldValue.serverTimestamp(), by, action: 'change email alerts', status: 'succeeded', detail: Object.keys(patch).join(', ') });
+  return { ok: true };
+});
+
+// "Send me a test": the weekly summary, to the caller only.
+export const testEmail = onCall(opts, async (req) => {
+  const by = await requireUser(req);
+  const r = await weeklySummary([by], by);
+  if (r.skipped) throw new HttpsError('failed-precondition', r.skipped);
+  return { ok: true };
+});
+
+export const alertsNow = onCall(opts, async (req) => {
+  const by = await requireUser(req);
+  return { events: await checkAlerts(by) };
+});
+
+// ---- invite only ---------------------------------------------------------------
+// Someone signed in but not on the list asks; the owners get an email and
+// approve or decline in Settings.
+export const requestAccess = onCall(opts, async (req) => {
+  const t = signedIn(req);
+  const email = t.email.toLowerCase();
+  if ((await allowedEmails()).has(email)) return { status: 'approved' };
+  const note = String((req.data && req.data.note) || '').slice(0, 300);
+  const ref = db.collection('requests').doc(email);
+  const cur = await ref.get();
+  if (cur.exists && cur.data().status === 'pending') return { status: 'pending' };
+  if (cur.exists && cur.data().status === 'declined' && Date.now() - cur.data().at.toMillis() < 86400000) return { status: 'declined' };
+  await ref.set({ email, name: t.name || '', note, status: 'pending', at: FieldValue.serverTimestamp() });
+  await db.collection('log').add({ at: FieldValue.serverTimestamp(), by: email, action: 'ask for access', status: 'pending' });
+  await mail(OWNER_EMAILS.value().split(/[\s,]+/).filter(Boolean), accessRequestEmail(email, note, APP_URL.value()), 'access request', email).catch(() => {});
+  return { status: 'pending' };
+});
+
+async function grantAccess(by, email) {
+  const ref = db.doc('config/access');
+  const cur = ((await ref.get()).data() || {}).emails || [];
+  await ref.set({ emails: [...new Set([...cur, email])] });
+}
+
+export const decideAccess = onCall(opts, async (req) => {
+  const by = await requireUser(req);
+  const { email, approve } = req.data || {};
+  if (!EMAIL_RE.test(email || '')) throw new HttpsError('invalid-argument', 'email');
+  const e = email.toLowerCase();
+  const ref = await logStart(by, approve ? 'approve access' : 'decline access', { detail: e });
+  if (approve) await grantAccess(by, e);
+  await db.collection('requests').doc(e).set({ status: approve ? 'approved' : 'declined', decidedBy: by, decidedAt: FieldValue.serverTimestamp() }, { merge: true });
+  await logEnd(ref, 'succeeded', e);
+  if (approve) await mail([e], welcomeEmail(e, by, APP_URL.value()), 'welcome', by).catch(() => {});
+  return { ok: true };
+});
+
+export const invite = onCall(opts, async (req) => {
+  const by = await requireUser(req);
+  const email = String((req.data && req.data.email) || '').toLowerCase();
+  if (!EMAIL_RE.test(email)) throw new HttpsError('invalid-argument', 'Type a Google account address.');
+  const ref = await logStart(by, 'invite', { detail: email });
+  await grantAccess(by, email);
+  await logEnd(ref, 'succeeded', email);
+  const r = await mail([email], welcomeEmail(email, by, APP_URL.value()), 'invite', by).catch((e) => ({ skipped: e.message }));
+  return { ok: true, emailed: !r.skipped };
 });
 
 async function projectDoc(projectId) {
@@ -330,12 +477,12 @@ export const protect = onCall(opts, async (req) => {
     const pr = await gh.pullRequest(repo, {
       branch: 'yourbackupagent/protect', message: `Back up ${projectId} with YourBackupAgent ${kitRef}`,
       title: `Backups with YourBackupAgent (${projectId})`,
-      body: protectBody(projectId, kitRef, secret, existing),
+      body: protectBody(repo, projectId, kitRef, secret, existing),
       files,
     });
     if (!s.repos.includes(repo)) await db.doc('config/settings').set({ repos: [...s.repos, repo] }, { merge: true });
     await logEnd(ref, 'succeeded', `pull request #${pr.number}`, { link: pr.html_url, project: projectId });
-    return { pr: pr.html_url, number: pr.number, projectId, secret, commands: setupCommands(projectId) };
+    return { pr: pr.html_url, number: pr.number, projectId, secret, commands: setupCommands(repo) };
   } catch (e) {
     await logEnd(ref, 'failed', e.message);
     throw new HttpsError('internal', e.message);
@@ -397,15 +544,15 @@ export function pickNewestTag(names) {
   return v.length ? v[0].n : '';
 }
 
-function protectBody(projectId, kitRef, secret, existing) {
+function protectBody(repo, projectId, kitRef, secret, existing) {
   return [
     `Adds daily backups of Firebase project \`${projectId}\` with [YourBackupAgent](https://github.com/${KIT_REPO}) ${kitRef}:`,
     '',
     '- `backup-kit/backup.sh`: runs the kit version pinned in `backup-kit/backup.env`',
     existing ? '- `backup-kit/backup.env` already exists and is left as it is' : '- `backup-kit/backup.env`: this project\'s settings (names only, no secrets). Check `CI_SA` and the bucket names.',
-    `- \`.github/workflows/backup.yml\`: back up at 02:00 UTC every day, restore drill on Sundays (deploy key secret: \`${secret || 'FIREBASE_SERVICE_ACCOUNT (not found: set the right name)'}\`)`,
+    `- \`.github/workflows/backup.yml\`: back up at 02:00 UTC every day, restore drill on Sundays (sign-in secret: \`${secret || 'YOURBACKUPAGENT_SA_KEY, made by onboard.sh'}\`)`,
     '',
-    'Before merging: run the one-time setup as the project owner (the manager app lists the commands), otherwise the first nightly backup fails. A `rebuild-drill.yml` that deploys this site into the drill project is project-specific and comes separately (template: `templates/rebuild-drill.yml` in the kit).',
+    'Before merging: run the one-time setup on a Mac, from a checkout of dagangilat/yourbackupagent: `./onboard.sh ' + repo + '` (it logs in, makes the GitHub key if needed, sets up the buckets and protection, takes the first backup and offers a rebuild drill). Otherwise the first nightly backup fails. A `rebuild-drill.yml` that deploys this site into the drill project is project-specific and comes separately (template: `templates/rebuild-drill.yml` in the kit).',
     '',
     'Opened from the YourBackupAgent Manager.',
   ].join('\n');

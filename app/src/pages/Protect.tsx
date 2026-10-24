@@ -17,7 +17,7 @@ export function Protect() {
   return (
     <div className="stack narrow">
       <h1>Protect a repository</h1>
-      <p>Opens a pull request in the repository with YourBackupAgent (<code>backup-kit/</code> and a daily Backup workflow), filled in from its <code>.firebaserc</code>. Then run the one-time setup below as the project owner, merge, and prove it with a rebuild drill.</p>
+      <p>Opens a pull request in the repository with YourBackupAgent (<code>backup-kit/</code> and a daily Backup workflow), filled in from its <code>.firebaserc</code>. Then one command on your Mac does the rest.</p>
       {banner}
       {!repos && <button className="btn primary" disabled={!!busy} onClick={load}>{busy ? 'Reading your repositories…' : 'List my Firebase repositories'}</button>}
       {repos && !result && (
@@ -50,11 +50,11 @@ export function Protect() {
       {result && (
         <section className="panel">
           <h4>One-time setup for {result.projectId}</h4>
-          <p className="small">On your Mac, in a checkout of the pull request's branch (<code>yourbackupagent/protect</code>). {result.secret ? <>The workflow signs in with the secret <code>{result.secret}</code>.</> : <b>No deploy key secret was found: set its name in .github/workflows/backup.yml.</b>}</p>
+          <p className="small">On your Mac. The script checks out the pull request, asks you to log in only where it needs to, {result.secret ? <>uses the secret <code>{result.secret}</code> the repository already has, </> : <>makes a GitHub key for the backups (the repository has none yet), </>}sets up the backup bucket, protection and the vault, takes the first backup, lets this app read it, offers a rebuild drill, and at the end offers to merge. It can run again safely.</p>
           <ol className="steps">
             {result.commands.map((c) => <li key={c.cmd}><span>{c.what}</span><Copy text={c.cmd} /></li>)}
           </ol>
-          <p className="small">Then merge the pull request: the Backup workflow runs every night from main, and this project shows up on the overview after the next refresh.</p>
+          <p className="small">After the merge the Backup workflow runs every night, and the project shows up on the overview after the next refresh.</p>
         </section>
       )}
     </div>

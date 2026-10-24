@@ -64,3 +64,58 @@ function niceMax(v: number) {
   for (const m of [1, 2, 2.5, 5, 10]) if (m * p >= v) return m * p;
   return 10 * p;
 }
+
+// One row per project, one cell per day: green good, red failed, amber
+// incomplete, empty when nothing ran.
+export type Cell = 'succeeded' | 'failed' | 'incomplete' | 'unknown' | 'none';
+export function StatusGrid({ rows, days, dayLabels }: { rows: { label: string; cells: Cell[] | string[] }[]; days: number; dayLabels?: string[] }) {
+  return (
+    <div className="sgrid" style={{ gridTemplateColumns: `minmax(90px, max-content) repeat(${days}, minmax(0, 1fr))` }} role="img" aria-label="Backup results per day">
+      {rows.map((r) => (
+        <div className="sgrid-row" key={r.label} style={{ display: 'contents' }}>
+          <span className="sgrid-label">{r.label}</span>
+          {Array.from({ length: days }, (_, i) => {
+            const c = (r.cells[i] || 'none') as Cell;
+            return <i key={i} className={`cell ${c}`} title={`${r.label}${dayLabels ? ` ${dayLabels[i]}` : ''}: ${c === 'none' ? 'no run' : c}`} />;
+          })}
+        </div>
+      ))}
+      {dayLabels && dayLabels.length > 0 && (
+        <>
+          <span />
+          <span className="sgrid-axis" style={{ gridColumn: `2 / span ${days}` }}><span>{dayLabels[0]}</span><span>{dayLabels[dayLabels.length - 1]}</span></span>
+        </>
+      )}
+    </div>
+  );
+}
+
+// Horizontal bars with a value label, one per row; an optional limit line.
+export function HBars({ rows, unit, limit, limitLabel }: { rows: { label: string; value: number; tone?: string }[]; unit: (v: number) => string; limit?: number; limitLabel?: string }) {
+  const max = niceMax(Math.max(1, limit || 0, ...rows.map((r) => r.value)));
+  return (
+    <div className="hbars">
+      {rows.map((r) => (
+        <div className="hbar" key={r.label}>
+          <span className="hbar-label">{r.label}</span>
+          <span className="hbar-track">
+            <span className="hbar-fill" style={{ width: `${(100 * r.value) / max}%`, background: r.tone || 'var(--c1)' }} />
+            {limit != null && <span className="hbar-limit" style={{ left: `${(100 * limit) / max}%` }} title={limitLabel} />}
+          </span>
+          <span className="hbar-value">{unit(r.value)}</span>
+        </div>
+      ))}
+      {limit != null && limitLabel && <span className="small muted">Dashed line: {limitLabel}</span>}
+    </div>
+  );
+}
+
+export function Kpi({ label, value, sub, tone }: { label: string; value: string; sub?: string; tone?: 'ok' | 'warn' | 'bad' }) {
+  return (
+    <div className={`kpi ${tone || ''}`}>
+      <span className="kpi-label">{label}</span>
+      <span className="kpi-value">{value}</span>
+      {sub && <span className="kpi-sub">{sub}</span>}
+    </div>
+  );
+}

@@ -40,9 +40,23 @@ app/setup.sh create                      # project, Firebase, Firestore, runner 
 # Firebase console -> Authentication -> Sign-in method -> Google -> Enable
 app/setup.sh token                       # GitHub token the app uses (pasted, never shown)
 app/setup.sh runner                      # build + deploy the kit runner job
+app/setup.sh email                       # Resend key for alerts (or: email --from PROJECT_ID)
 app/setup.sh deploy                      # web app, API, rules
 cd ~/foundation-next && ~/yourbackupagent/app/setup.sh grant foundation-next-app
 ```
+
+New projects after that: Protect a repository in the app, then
+`./onboard.sh owner/repo` from this checkout (it runs `grant` itself).
+
+## Invite only, and email alerts
+
+Signed out, the app shows its front page. Signing in with a Google account
+that is not on the access list leads to "Ask for access": the owners get an
+email and approve or decline in Settings, which also invites by address.
+Email goes through Resend from `backups@plantagoai.com` (`MAIL_FROM`): a
+project that needs attention or recovers (checked after the nightly refresh),
+drill results as soon as a drill ends, and a Monday summary. Settings picks
+which and who; "Send me a test" sends the summary to you.
 
 Then open https://yourbackupagent-app.web.app, sign in, and press Refresh now.
 

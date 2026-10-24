@@ -17,6 +17,8 @@ jobs:
         run: shellcheck -x -S warning kit/backup.sh kit/lib.sh test/run.sh templates/backup-kit-wrapper.sh
       - name: Offline tests (fake Google Cloud)
         run: test/run.sh
+      - name: Onboard script
+        run: shellcheck -x -S warning onboard.sh test/onboard_test.sh && test/onboard_test.sh
 
   app:
     runs-on: ubuntu-latest

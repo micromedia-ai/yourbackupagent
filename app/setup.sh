@@ -9,6 +9,8 @@
 #   app/setup.sh runner            build and deploy the kit runner job
 #   app/setup.sh grant PROJECT_ID  let the app read and prune PROJECT_ID's backups,
 #                                  read its vault copies and use the drill project
+#   app/setup.sh email             turn on email alerts: the Resend API key (asks for it,
+#                                  or --from PROJECT copies RESEND_API_KEY from there)
 #   app/setup.sh deploy            build and deploy the web app, API and rules
 #   app/setup.sh status            what exists
 #
@@ -28,7 +30,15 @@ say() { printf '%s\n' "$*"; }
 info() { printf '\n==> %s\n' "$*"; }
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 run() { printf '  + %s\n' "$*" >&2; "$@"; }
+retry() { # retry CMD...: a few tries 20s apart (new IAM accounts appear slowly)
+  local n=1
+  until "$@"; do
+    [ "$n" -lt 4 ] || return 1
+    say "  (not ready yet, trying again in 20s)"; n=$((n + 1)); sleep 20
+  done
+}
 G=(gcloud --account="$OWNER")
+F=(firebase --account "$OWNER")
 
 need() { command -v "$1" >/dev/null 2>&1 || die "$1 is missing ($2)"; }
 need gcloud "brew install --cask google-cloud-sdk"
@@ -53,12 +63,12 @@ cmd_create() {
     run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com secretmanager.googleapis.com \
     cloudscheduler.googleapis.com eventarc.googleapis.com pubsub.googleapis.com identitytoolkit.googleapis.com \
     iam.googleapis.com cloudresourcemanager.googleapis.com --project "$APP_PROJECT"
-  need firebase "npm install -g firebase-tools; firebase login"
-  if ! firebase projects:list --json 2>/dev/null | jq -e --arg p "$APP_PROJECT" '.result[] | select(.projectId == $p)' >/dev/null; then
-    run firebase projects:addfirebase "$APP_PROJECT"
+  need firebase "npm install -g firebase-tools; firebase login:add $OWNER"
+  if ! "${F[@]}" projects:list --json 2>/dev/null | jq -e --arg p "$APP_PROJECT" '.result[] | select(.projectId == $p)' >/dev/null; then
+    run "${F[@]}" projects:addfirebase "$APP_PROJECT" || die "could not add Firebase. Sign the firebase CLI in as $OWNER (firebase login:add $OWNER), or add it in console.firebase.google.com -> Create a project -> existing project $APP_PROJECT, then run create again"
   fi
-  if [ "$(firebase apps:list WEB --project "$APP_PROJECT" --json 2>/dev/null | jq '.result | length')" = "0" ]; then
-    run firebase apps:create WEB "YourBackupAgent Manager" --project "$APP_PROJECT"
+  if [ "$("${F[@]}" apps:list WEB --project "$APP_PROJECT" --json 2>/dev/null | jq '.result | length')" = "0" ]; then
+    run "${F[@]}" apps:create WEB "YourBackupAgent Manager" --project "$APP_PROJECT"
   fi
   if ! "${G[@]}" firestore databases describe --database='(default)' --project "$APP_PROJECT" >/dev/null 2>&1; then
     run "${G[@]}" firestore databases create --location=nam5 --project "$APP_PROJECT"
@@ -66,14 +76,16 @@ cmd_create() {
   if ! "${G[@]}" iam service-accounts describe "$RUNNER_SA" --project "$APP_PROJECT" >/dev/null 2>&1; then
     run "${G[@]}" iam service-accounts create "$RUNNER" --project "$APP_PROJECT" \
       --display-name="YourBackupAgent runner (manager app + kit runner job)"
+    say "  Waiting for the new account to show up in IAM (can take a minute)"
+    sleep 30
   fi
   local role
   # Its own project: the database, start its job, write logs.
   for role in roles/datastore.user roles/run.developer roles/logging.logWriter roles/iam.serviceAccountTokenCreator; do
-    run "${G[@]}" projects add-iam-policy-binding "$APP_PROJECT" --member="serviceAccount:$RUNNER_SA" --role="$role" --condition=None --quiet --format=none
+    retry run "${G[@]}" projects add-iam-policy-binding "$APP_PROJECT" --member="serviceAccount:$RUNNER_SA" --role="$role" --condition=None --quiet --format=none
   done
   # Start executions of the job as itself.
-  run "${G[@]}" iam service-accounts add-iam-policy-binding "$RUNNER_SA" --project "$APP_PROJECT" \
+  retry run "${G[@]}" iam service-accounts add-iam-policy-binding "$RUNNER_SA" --project "$APP_PROJECT" \
     --member="serviceAccount:$RUNNER_SA" --role=roles/iam.serviceAccountUser --quiet --format=none
   say ""
   say "  Next, in the Firebase console (console.firebase.google.com/project/$APP_PROJECT/authentication/providers):"
@@ -96,6 +108,41 @@ cmd_token() {
   fi
   run "${G[@]}" secrets add-iam-policy-binding GITHUB_TOKEN --project "$APP_PROJECT" \
     --member="serviceAccount:$RUNNER_SA" --role=roles/secretmanager.secretAccessor --quiet --format=none
+}
+
+MAIL_DOMAIN="${MAIL_DOMAIN:-plantagoai.com}"
+
+put_secret() { # put_secret NAME (value on stdin)
+  if "${G[@]}" secrets describe "$1" --project "$APP_PROJECT" >/dev/null 2>&1; then
+    run "${G[@]}" secrets versions add "$1" --data-file=- --project "$APP_PROJECT" --format=none
+  else
+    run "${G[@]}" secrets create "$1" --data-file=- --replication-policy=automatic --project "$APP_PROJECT" --format=none
+  fi
+  run "${G[@]}" secrets add-iam-policy-binding "$1" --project "$APP_PROJECT" \
+    --member="serviceAccount:$RUNNER_SA" --role=roles/secretmanager.secretAccessor --quiet --format=none
+}
+
+cmd_email() {
+  info "Email alerts (secret RESEND_API_KEY in $APP_PROJECT, sender backups@$MAIL_DOMAIN)"
+  local k="" from=""
+  if [ "${1:-}" = "--from" ]; then
+    from="${2:-}"; [ -n "$from" ] || die "usage: app/setup.sh email [--from PROJECT_ID]"
+    k="$(gcloud secrets versions access latest --secret=RESEND_API_KEY --project "$from")" || die "cannot read RESEND_API_KEY in $from"
+  else
+    say "  The Resend API key that sends for $MAIL_DOMAIN (resend.com/api-keys)."
+    printf '  Paste it (not shown): '
+    read -rs k; printf '\n'
+  fi
+  [[ "$k" =~ ^re_ ]] || die "that does not look like a Resend key (starts with re_)"
+  printf '%s' "$k" | put_secret RESEND_API_KEY
+  local st
+  st="$(curl -s -H "Authorization: Bearer $k" https://api.resend.com/domains | jq -r --arg d "$MAIL_DOMAIN" '[.data[]? | select(.name == $d) | .status][0] // "unknown"')"
+  case "$st" in
+    verified) say "  $MAIL_DOMAIN is verified in Resend." ;;
+    unknown) say "  Could not list Resend domains with this key (a sending-only key can't). If $MAIL_DOMAIN is verified there, it works." ;;
+    *) say "  WARNING: $MAIL_DOMAIN is '$st' in Resend; emails fail until it is verified." ;;
+  esac
+  say "  Next: app/setup.sh deploy, then Settings -> Email alerts -> Send me a test."
 }
 
 cmd_runner() {
@@ -142,10 +189,18 @@ cmd_grant() {
 
 cmd_deploy() {
   info "Deploy the manager app to $APP_PROJECT"
-  need firebase "npm install -g firebase-tools; firebase login"
+  need firebase "npm install -g firebase-tools; firebase login:add $OWNER"
+  # Since 2026-10 new projects get no default Hosting site; create it once.
+  if ! "${F[@]}" hosting:sites:get "$APP_PROJECT" --project "$APP_PROJECT" >/dev/null 2>&1; then
+    run "${F[@]}" hosting:sites:create "$APP_PROJECT" --project "$APP_PROJECT"
+  fi
   (cd "$APP_DIR" && run npm ci && run npm run build && cd functions && run npm ci --omit=dev)
-  printf 'RUNNER_SA=%s\nOWNER_EMAILS=%s\n' "$RUNNER_SA" "$OWNER" >"$APP_DIR/functions/.env.$APP_PROJECT"
-  (cd "$APP_DIR" && run firebase deploy --project "$APP_PROJECT" --only hosting,firestore,functions --force)
+  if ! "${G[@]}" secrets describe RESEND_API_KEY --project "$APP_PROJECT" >/dev/null 2>&1; then
+    say "  Email alerts are off until app/setup.sh email (storing a placeholder key)."
+    printf 'none' | put_secret RESEND_API_KEY
+  fi
+  printf 'RUNNER_SA=%s\nOWNER_EMAILS=%s\nMAIL_FROM="%s"\nAPP_URL=%s\n' "$RUNNER_SA" "$OWNER" "YourBackupAgent <backups@$MAIL_DOMAIN>" "https://$APP_PROJECT.web.app" >"$APP_DIR/functions/.env.$APP_PROJECT"
+  (cd "$APP_DIR" && run "${F[@]}" deploy --project "$APP_PROJECT" --only hosting,firestore,functions --force)
   say "  Open https://$APP_PROJECT.web.app and sign in as $OWNER."
 }
 
@@ -162,7 +217,8 @@ case "${1:-}" in
   token) cmd_token ;;
   runner) cmd_runner ;;
   grant) shift; cmd_grant "${1:-}" ;;
+  email) shift; cmd_email "$@" ;;
   deploy) cmd_deploy ;;
   status) cmd_status ;;
-  *) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+  *) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac

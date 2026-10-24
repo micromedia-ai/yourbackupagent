@@ -1,8 +1,8 @@
 import { call } from '../lib/firebase';
-import { daily, useAllSets, useDoc, useLog, useProjects, type Project } from '../lib/data';
-import { ago, bytes, runDate, tsDate, when } from '../lib/format';
+import { analytics, daily, dayKeys, statusCells, useAllSets, useDoc, useLog, useProjects, type Project } from '../lib/data';
+import { ago, bytes, monthlyCost, runDate, tsDate, when } from '../lib/format';
 import { link } from '../lib/route';
-import { Bars } from '../components/charts';
+import { Bars, Kpi, StatusGrid } from '../components/charts';
 import { Pill, statusTone, useBusy } from '../components/ui';
 import { LogList } from './Log';
 
@@ -54,12 +54,44 @@ function Card({ p }: { p: Project }) {
   );
 }
 
+export function Kpis({ days = 30 }: { days?: number }) {
+  const { rows: projects } = useProjects();
+  const sets = useAllSets();
+  const { rows: log } = useLog(300);
+  if (!projects || !sets || !log) return null;
+  const a = analytics(projects, sets, log, days);
+  const worst = a.oldestNewestGoodHours;
+  return (
+    <div className="kpis">
+      <Kpi label="Projects" value={`${a.healthy} of ${a.projects}`} sub="healthy" tone={a.healthy === a.projects ? 'ok' : 'warn'} />
+      <Kpi label={`Good runs, ${days} days`} value={a.rate == null ? '—' : `${a.rate}%`} sub={`${a.good} of ${a.runs}`} tone={a.rate == null ? undefined : a.rate >= 95 ? 'ok' : a.rate >= 80 ? 'warn' : 'bad'} />
+      <Kpi label="Furthest behind" value={worst == null ? '—' : worst < 48 ? `${Math.round(worst)}h` : `${Math.round(worst / 24)}d`} sub="since a project's newest good backup" tone={worst == null ? 'bad' : worst <= 26 ? 'ok' : worst <= 50 ? 'warn' : 'bad'} />
+      <Kpi label="Stored" value={bytes(a.bytes)} sub={`${a.sets} sets · about $${monthlyCost(a.bytes).toFixed(2)}/month`} />
+      <Kpi label={`Drills, ${days} days`} value={`${a.drillsPassed} passed`} sub={a.drillsFailed ? `${a.drillsFailed} failed` : 'none failed'} tone={a.drillsFailed ? 'bad' : a.drillsPassed ? 'ok' : undefined} />
+    </div>
+  );
+}
+
+function Attention({ projects }: { projects: Project[] }) {
+  const bad = projects.filter((p) => p.health && p.health.level !== 'ok');
+  if (!bad.length) return null;
+  return (
+    <div className="attention" role="status">
+      <b>Needs attention</b>
+      {bad.map((p) => (
+        <a key={p.projectId} {...link(`/projects/${encodeURIComponent(p.projectId)}`)}><Pill tone={statusTone(p.health.level)}>{p.label}</Pill> {p.health.text}</a>
+      ))}
+    </div>
+  );
+}
+
 export function Overview() {
   const { rows: projects, error } = useProjects();
   const sets = useAllSets();
   const { rows: log } = useLog(8);
   const ids = (projects || []).map((p) => p.projectId);
   const d = sets && projects ? daily(sets, ids) : null;
+  const k = dayKeys(30);
   return (
     <div className="stack">
       <div className="row between">
@@ -67,15 +99,24 @@ export function Overview() {
         <div className="row"><RefreshButton /></div>
       </div>
       {error && <p className="banner bad">{error}</p>}
+      {projects && <Attention projects={projects} />}
+      <Kpis />
       <DrillSlot />
       <div className="cards">
         {(projects || []).map((p) => <Card key={p.projectId} p={p} />)}
         <a className="pcard add" {...link('/protect')}>+ Protect a repository</a>
       </div>
       {projects && projects.length === 0 && <p className="muted">No projects read yet. Press Refresh now (it reads every repository listed in Settings).</p>}
+      {sets && projects && projects.length > 0 && (
+        <section className="panel">
+          <h4>Every night, last 30 days</h4>
+          <StatusGrid days={30} dayLabels={k.labels} rows={projects.map((p) => ({ label: p.label, cells: statusCells(sets, p.projectId, k.keys) }))} />
+          <div className="legend"><span><i className="cell succeeded" />good</span><span><i className="cell failed" />failed</span><span><i className="cell incomplete" />incomplete</span><span><i className="cell none" />no run</span></div>
+        </section>
+      )}
       <div className="split">
         <section className="panel">
-          <h4>Good backups per day, last 30 days</h4>
+          <h4>Size of each night's good backup</h4>
           {d ? <Bars labels={d.labels} flags={d.failed} unit={bytes} series={(projects || []).map((p, i) => ({ label: p.label, color: PROJECT_COLORS[i % 4], values: d.values[i] }))} /> : <p className="muted">Loading…</p>}
           <div className="legend">
             {(projects || []).map((p, i) => <span key={p.projectId}><i style={{ background: PROJECT_COLORS[i % 4] }} />{p.label}</span>)}

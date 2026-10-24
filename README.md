@@ -79,6 +79,16 @@ start of every drill; GitHub gets owner access to it only during a drill.
 
 ## Adding the kit to a project
 
+The short way: in the manager app, **Protect a repository** (it opens the
+pull request), then on a Mac, from this checkout:
+
+```bash
+./onboard.sh owner/repo        # login, GitHub key if missing, setup, protect, offsite,
+                               # first backup, app access, rebuild drill, merge (asks first)
+```
+
+It runs every step below in order and can run again. By hand:
+
 1. In the project repository: `mkdir backup-kit`, copy
    `templates/backup-kit-wrapper.sh` to `backup-kit/backup.sh` (executable),
    `templates/backup.env.example` to `backup-kit/backup.env` and fill it in.

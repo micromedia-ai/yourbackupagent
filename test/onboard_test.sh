@@ -31,7 +31,9 @@ case "$*" in
   "repo clone"*) git clone -q "$ORIGIN" "$4" ;;
   "secret list"*) [ -f "$LOG.secret" ] && echo YOURBACKUPAGENT_SA_KEY; true ;;
   "secret set"*) cat >/dev/null; touch "$LOG.secret" ;;
+  "pr view"*"--json state"*) if [ -f "$LOG.merged" ]; then echo MERGED; else echo OPEN; fi ;;
   "pr view"*) echo https://github.com/x/pull/14 ;;
+  "repo view"*) echo main ;;
 esac
 H
 cat >"$T/seed/backup-kit/backup.sh" <<'B'
@@ -67,6 +69,16 @@ grep -q 'gh pr merge' "$LOG" && fail "merged without asking"; ok "no merge witho
 "$ROOT/onboard.sh" dagangilat/demo --no-drill </dev/null >"$T/out2" 2>&1 || { cat "$T/out2"; fail "second run exited non-zero"; }
 grep -q 'keys create' "$LOG" && fail "second run made another key"; ok "second run reuses the key"
 grep -q '^kit run' "$LOG" || fail "second run skipped the backup"; ok "second run backs up again"
+
+# The protect pull request was merged before onboard ran (and its branch kept):
+# a new key must go to a fresh pull request, never the dead branch.
+: >"$LOG"; rm -f "$LOG.sa" "$LOG.secret"; touch "$LOG.merged"
+rm -rf "$T/work"
+before="$(git --git-dir="$T/origin.git" rev-parse yourbackupagent/protect)"
+"$ROOT/onboard.sh" dagangilat/demo --no-drill </dev/null >"$T/out3" 2>&1 || { cat "$T/out3"; fail "merged-PR run exited non-zero"; }
+[ "$(git --git-dir="$T/origin.git" rev-parse yourbackupagent/protect)" = "$before" ] || fail "pushed to the merged branch"; ok "merged PR: protect branch untouched"
+git --git-dir="$T/origin.git" show yourbackupagent/ci-key:backup-kit/backup.env | grep -qx 'CI_SA=yourbackupagent-ci@demo-p.iam.gserviceaccount.com' || fail "no ci-key branch"; ok "merged PR: key settings on a new branch"
+grep -q '^gh pr create --repo dagangilat/demo --head yourbackupagent/ci-key' "$LOG" || fail "no new PR"; ok "merged PR: a new pull request"
 
 "$ROOT/onboard.sh" not-a-repo >/dev/null 2>&1 && fail "bad repo accepted"; ok "bad repo refused"
 echo "onboard: $pass passed"

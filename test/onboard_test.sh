@@ -17,7 +17,7 @@ echo "gcloud $*" >>"$LOG"
 case "$*" in
   "auth list"*) printf 'owner@x.com\ndagan.gilat@gmail.com\n' ;;
   "config get-value account"*) echo owner@x.com ;;
-  "projects get-iam-policy demo-p --account owner@x.com"*) echo '{"bindings":[{"role":"roles/owner","members":["user:owner@x.com"]}]}' ;;
+  "projects get-iam-policy demo-p --account owner@x.com"*) echo '{"bindings":[{"role":"roles/owner","members":["user:Owner@x.com"]}]}' ;;
   "projects get-iam-policy"*) echo '{"bindings":[]}' ;;
   "iam service-accounts describe"*) [ -f "$LOG.sa" ] ;;
   "iam service-accounts create"*) touch "$LOG.sa" ;;

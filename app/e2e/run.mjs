@@ -263,7 +263,11 @@ async function main() {
     await op.getByRole('button', { name: 'Ask for access' }).click();
     await op.getByText(/Asked\. The owner got an email/).waitFor({ timeout: 30000 });
     await op.screenshot({ path: `${SHOTS}/11-ask-for-access.png` });
-    const ask = fakes.emails.find((e) => e.subject === 'stranger@example.com asks for access to YourBackupAgent');
+    // The page says "Asked" as soon as the request is stored; the email goes out right after.
+    const askT0 = Date.now();
+    const findAsk = () => fakes.emails.find((e) => e.subject === 'stranger@example.com asks for access to YourBackupAgent');
+    while (!findAsk() && Date.now() - askT0 < 15000) await new Promise((r) => setTimeout(r, 300));
+    const ask = findAsk();
     check('the owner is emailed about the request', ask && ask.to.join() === 'dagan.gilat@gmail.com' && ask.html.includes('I look after the shop'));
     await page.goto('http://127.0.0.1:5055/settings');
     await page.locator('.requests li', { hasText: 'stranger@example.com' }).getByRole('button', { name: 'Approve' }).click();

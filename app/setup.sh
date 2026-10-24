@@ -29,6 +29,7 @@ info() { printf '\n==> %s\n' "$*"; }
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 run() { printf '  + %s\n' "$*" >&2; "$@"; }
 G=(gcloud --account="$OWNER")
+F=(firebase --account "$OWNER")
 
 need() { command -v "$1" >/dev/null 2>&1 || die "$1 is missing ($2)"; }
 need gcloud "brew install --cask google-cloud-sdk"
@@ -53,12 +54,12 @@ cmd_create() {
     run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com secretmanager.googleapis.com \
     cloudscheduler.googleapis.com eventarc.googleapis.com pubsub.googleapis.com identitytoolkit.googleapis.com \
     iam.googleapis.com cloudresourcemanager.googleapis.com --project "$APP_PROJECT"
-  need firebase "npm install -g firebase-tools; firebase login"
-  if ! firebase projects:list --json 2>/dev/null | jq -e --arg p "$APP_PROJECT" '.result[] | select(.projectId == $p)' >/dev/null; then
-    run firebase projects:addfirebase "$APP_PROJECT"
+  need firebase "npm install -g firebase-tools; firebase login:add $OWNER"
+  if ! "${F[@]}" projects:list --json 2>/dev/null | jq -e --arg p "$APP_PROJECT" '.result[] | select(.projectId == $p)' >/dev/null; then
+    run "${F[@]}" projects:addfirebase "$APP_PROJECT" || die "could not add Firebase. Sign the firebase CLI in as $OWNER (firebase login:add $OWNER), or add it in console.firebase.google.com -> Create a project -> existing project $APP_PROJECT, then run create again"
   fi
-  if [ "$(firebase apps:list WEB --project "$APP_PROJECT" --json 2>/dev/null | jq '.result | length')" = "0" ]; then
-    run firebase apps:create WEB "YourBackupAgent Manager" --project "$APP_PROJECT"
+  if [ "$("${F[@]}" apps:list WEB --project "$APP_PROJECT" --json 2>/dev/null | jq '.result | length')" = "0" ]; then
+    run "${F[@]}" apps:create WEB "YourBackupAgent Manager" --project "$APP_PROJECT"
   fi
   if ! "${G[@]}" firestore databases describe --database='(default)' --project "$APP_PROJECT" >/dev/null 2>&1; then
     run "${G[@]}" firestore databases create --location=nam5 --project "$APP_PROJECT"
@@ -142,10 +143,10 @@ cmd_grant() {
 
 cmd_deploy() {
   info "Deploy the manager app to $APP_PROJECT"
-  need firebase "npm install -g firebase-tools; firebase login"
+  need firebase "npm install -g firebase-tools; firebase login:add $OWNER"
   (cd "$APP_DIR" && run npm ci && run npm run build && cd functions && run npm ci --omit=dev)
   printf 'RUNNER_SA=%s\nOWNER_EMAILS=%s\n' "$RUNNER_SA" "$OWNER" >"$APP_DIR/functions/.env.$APP_PROJECT"
-  (cd "$APP_DIR" && run firebase deploy --project "$APP_PROJECT" --only hosting,firestore,functions --force)
+  (cd "$APP_DIR" && run "${F[@]}" deploy --project "$APP_PROJECT" --only hosting,firestore,functions --force)
   say "  Open https://$APP_PROJECT.web.app and sign in as $OWNER."
 }
 

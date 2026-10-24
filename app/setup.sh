@@ -80,10 +80,14 @@ cmd_create() {
     sleep 30
   fi
   local role
-  # Its own project: the database, start its job, write logs.
-  for role in roles/datastore.user roles/run.developer roles/logging.logWriter roles/iam.serviceAccountTokenCreator; do
+  # Its own project: the database, start its job, write logs, receive the
+  # Firestore events of the drill-alert trigger.
+  for role in roles/datastore.user roles/run.developer roles/logging.logWriter roles/iam.serviceAccountTokenCreator roles/eventarc.eventReceiver roles/run.invoker; do
     retry run "${G[@]}" projects add-iam-policy-binding "$APP_PROJECT" --member="serviceAccount:$RUNNER_SA" --role="$role" --condition=None --quiet --format=none
   done
+  # Service agents the Firestore trigger needs (new projects lack them at first).
+  run "${G[@]}" beta services identity create --service=eventarc.googleapis.com --project "$APP_PROJECT" --format=none || true
+  run "${G[@]}" beta services identity create --service=pubsub.googleapis.com --project "$APP_PROJECT" --format=none || true
   # Start executions of the job as itself.
   retry run "${G[@]}" iam service-accounts add-iam-policy-binding "$RUNNER_SA" --project "$APP_PROJECT" \
     --member="serviceAccount:$RUNNER_SA" --role=roles/iam.serviceAccountUser --quiet --format=none
@@ -200,7 +204,8 @@ cmd_deploy() {
     printf 'none' | put_secret RESEND_API_KEY
   fi
   printf 'RUNNER_SA=%s\nOWNER_EMAILS=%s\nMAIL_FROM="%s"\nAPP_URL=%s\n' "$RUNNER_SA" "$OWNER" "YourBackupAgent <backups@$MAIL_DOMAIN>" "https://$APP_PROJECT.web.app" >"$APP_DIR/functions/.env.$APP_PROJECT"
-  (cd "$APP_DIR" && run "${F[@]}" deploy --project "$APP_PROJECT" --only hosting,firestore,functions --force)
+  (cd "$APP_DIR" && run "${F[@]}" deploy --project "$APP_PROJECT" --only hosting,firestore,functions --force) \
+    || die "deploy failed. On a new project the Firestore trigger (drillAlert) can fail while Google sets up Eventarc: wait 3 minutes and run deploy again"
   say "  Open https://$APP_PROJECT.web.app and sign in as $OWNER."
 }
 

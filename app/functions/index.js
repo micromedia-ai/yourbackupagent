@@ -69,7 +69,7 @@ async function logEnd(ref, status, detail, extra = {}) {
 async function settings() {
   const doc = await db.doc('config/settings').get();
   const s = doc.exists ? doc.data() : {};
-  return { repos: s.repos || DEFAULT_REPOS, defaultMinSets: s.defaultMinSets || 7, ...s };
+  return { repos: s.repos || DEFAULT_REPOS, defaultMinSets: s.defaultMinSets || 7, ...s, sizeWarnSetGB: s.sizeWarnSetGB ?? 2, sizeWarnTotalGB: s.sizeWarnTotalGB ?? 20 };
 }
 
 async function loadProject(gh, repo) {
@@ -115,7 +115,8 @@ function mergeSets(inProject, inVault) {
   });
 }
 
-async function refreshProject(gh, repo) {
+async function refreshProject(gh, repo, s = null) {
+  s = s || await settings();
   const p = await loadProject(gh, repo);
   if (!p.protected) return { repo, protected: false };
   const ref = projectRef(p.projectId);
@@ -127,11 +128,14 @@ async function refreshProject(gh, repo) {
   for (const s of sets) batch.set(ref.collection('sets').doc(s.id), s);
   if (inProject && inVault) for (const k of known) if (!ids.has(k.id)) batch.delete(ref.collection('sets').doc(k.id));
   const projectSetsOnly = (inProject || []);
-  const h = inProject ? health(projectSetsOnly, { maxAgeHours: p.maxAgeHours, offsite: Boolean(p.offsiteBucket) }) : { level: 'bad', text: 'Cannot read the backup bucket' };
+  const totalBytes = sets.reduce((a, x) => a + x.bytes, 0);
+  const h = inProject
+    ? health(projectSetsOnly, { maxAgeHours: p.maxAgeHours, offsite: Boolean(p.offsiteBucket), maxSetBytes: (s.sizeWarnSetGB || 0) * 1e9, maxTotalBytes: (s.sizeWarnTotalGB || 0) * 1e9, totalBytes })
+    : { level: 'bad', text: 'Cannot read the backup bucket' };
   const { envText, ...rest } = p;
   batch.set(ref, {
     ...rest, envText, health: h, errors, refreshedAt: FieldValue.serverTimestamp(),
-    totals: { sets: sets.length, inProject: projectSetsOnly.length, inVault: (inVault || []).length, bytes: sets.reduce((a, s) => a + s.bytes, 0) },
+    totals: { sets: sets.length, inProject: projectSetsOnly.length, inVault: (inVault || []).length, bytes: totalBytes },
     prunePreview: inProject ? prunePlan(projectSetsOnly, { keepMin: p.keepMinSets, keepDays: p.keepDays }) : [],
   }, { merge: false });
   await batch.commit();
@@ -167,7 +171,7 @@ async function refreshAll(token) {
   const gh = github(token);
   const s = await settings();
   const out = [];
-  for (const repo of s.repos) out.push(await refreshProject(gh, repo).catch((e) => ({ repo, error: e.message })));
+  for (const repo of s.repos) out.push(await refreshProject(gh, repo, s).catch((e) => ({ repo, error: e.message })));
   const drill = out.find((o) => o.protected);
   if (drill) {
     const p = (await projectRef(drill.projectId).get()).data();
@@ -516,8 +520,13 @@ export const setMinSets = onCall(opts, async (req) => {
 
 export const saveSettings = onCall(opts, async (req) => {
   const by = await requireUser(req);
-  const { emails, defaultMinSets, repos: repoList } = req.data || {};
+  const { emails, defaultMinSets, repos: repoList, sizeWarnSetGB, sizeWarnTotalGB } = req.data || {};
   const patch = {};
+  for (const [k, v] of [['sizeWarnSetGB', sizeWarnSetGB], ['sizeWarnTotalGB', sizeWarnTotalGB]]) {
+    if (v === undefined) continue;
+    if (typeof v !== 'number' || !(v >= 0) || v > 100000) throw new HttpsError('invalid-argument', 'size watch levels are GB, 0 (off) to 100000');
+    patch[k] = v;
+  }
   if (defaultMinSets !== undefined) {
     if (!Number.isInteger(defaultMinSets) || defaultMinSets < 1 || defaultMinSets > 999) throw new HttpsError('invalid-argument', 'minimum must be 1-999');
     patch.defaultMinSets = defaultMinSets;

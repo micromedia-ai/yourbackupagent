@@ -66,3 +66,52 @@ export function daily(sets: (BackupSet & { projectId: string })[], projects: str
   const failed = keys.map((k) => sets.some((s) => s.id.startsWith(k) && s.status === 'failed'));
   return { labels, values, failed };
 }
+
+// The last `days` UTC days: keys like 20261024 and short labels.
+export function dayKeys(days: number) {
+  const keys: string[] = [], labels: string[] = [];
+  const now = new Date();
+  for (let i = days - 1; i >= 0; i--) {
+    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - i));
+    keys.push(d.toISOString().slice(0, 10).replace(/-/g, ''));
+    labels.push(d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' }));
+  }
+  return { keys, labels };
+}
+
+// Per day, the result of that day's newest run in the project bucket.
+export function statusCells(sets: (BackupSet & { projectId: string })[], projectId: string, keys: string[]) {
+  return keys.map((k) => {
+    const day = sets.filter((s) => s.projectId === projectId && s.inProject && s.id.startsWith(k));
+    if (!day.length) return 'none';
+    return day.reduce((a, b) => (b.id > a.id ? b : a)).status as string;
+  });
+}
+
+// Headline numbers over the last `days` days.
+export function analytics(projects: Project[], sets: (BackupSet & { projectId: string })[], log: LogLine[], days = 30) {
+  const since = Date.now() - days * 86400000;
+  const t = (id: string) => {
+    const m = id.match(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$/);
+    return m ? Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]) : 0;
+  };
+  const recent = sets.filter((s) => s.inProject && t(s.id) >= since);
+  const good = recent.filter((s) => s.status === 'succeeded');
+  const drills = log.filter((l) => /^(rebuild|restore) drill/.test(l.action) && ['succeeded', 'failed'].includes(l.status) && (l.at?.toDate?.()?.getTime?.() || 0) >= since);
+  const ages = projects.map((p) => (p.health?.newestGood ? (Date.now() - t(p.health.newestGood)) / 3600000 : null)).filter((a): a is number => a != null);
+  return {
+    projects: projects.length,
+    healthy: projects.filter((p) => p.health?.level === 'ok').length,
+    runs: recent.length,
+    good: good.length,
+    rate: recent.length ? Math.round((100 * good.length) / recent.length) : null,
+    oldestNewestGoodHours: ages.length ? Math.max(...ages) : null,
+    bytes: projects.reduce((a, p) => a + (p.totals?.bytes || 0), 0),
+    sets: projects.reduce((a, p) => a + (p.totals?.sets || 0), 0),
+    drillsPassed: drills.filter((d) => d.status === 'succeeded').length,
+    drillsFailed: drills.filter((d) => d.status === 'failed').length,
+  };
+}
+
+export type AccessRequest = { id: string; email: string; name?: string; note?: string; status: string; at?: any };
+export const useRequests = () => useQuery<AccessRequest>(() => query(collection(db(), 'requests'), where('status', '==', 'pending')), []);

@@ -10,6 +10,11 @@ service cloud.firestore {
         && get(/databases/$(database)/documents/config/access).data.emails.hasAny([request.auth.token.email.lower()]);
     }
     match /{path=**}/sets/{id} { allow read: if allowed(); allow write: if false; }
+    // Someone asking for access may see their own request (pending/declined).
+    match /requests/{email} {
+      allow read: if allowed() || (request.auth != null && request.auth.token.email_verified == true && request.auth.token.email.lower() == email);
+      allow write: if false;
+    }
     match /{document=**} { allow read: if allowed(); allow write: if false; }
   }
 }

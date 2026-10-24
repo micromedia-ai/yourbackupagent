@@ -41,7 +41,7 @@ export function kitFiles({ repo, projectId, label, secret, kitRef, templates }) 
   env = env.replace(/^# Backup settings for one Firebase project\. Copy to backup-kit\/backup\.env and fill in\.$/m,
     `# Backup settings for ${label} (Firebase project ${projectId}).`);
   const workflow = templates.workflow
-    .replace(/DEPLOY_KEY_SECRET_NAME/g, secret || 'FIREBASE_SERVICE_ACCOUNT')
+    .replace(/DEPLOY_KEY_SECRET_NAME/g, secret || 'YOURBACKUPAGENT_SA_KEY')
     .replace(/dagangilat\/yourbackupagent@v[0-9.]+/g, `${KIT_REPO}@${kitRef}`)
     .replace(/^# Copy to \.github\/workflows\/backup\.yml and set the deploy key secret name\.\n/m, '');
   return [
@@ -51,15 +51,11 @@ export function kitFiles({ repo, projectId, label, secret, kitRef, templates }) 
   ];
 }
 
-export function setupCommands(projectId) {
+// One command does the whole one-time setup (onboard.sh in the kit repo).
+export function setupCommands(repo) {
   return [
-    { what: 'Log in to both accounts (once per Mac)', cmd: 'gcloud auth login dagan.gilat@gmail.com\ngcloud auth login <owner of ' + projectId + '>' },
-    { what: 'Backup bucket and GitHub roles (lists CI_SA candidates the first time)', cmd: 'backup-kit/backup.sh setup' },
-    { what: 'Point-in-time recovery, delete protection, managed backups, lien', cmd: 'backup-kit/backup.sh protect' },
-    { what: 'Off-site bucket in the vault', cmd: 'backup-kit/backup.sh offsite' },
-    { what: 'First backup', cmd: 'backup-kit/backup.sh run' },
-    { what: 'Let the manager app read and prune it', cmd: '~/yourbackupagent/app/setup.sh grant ' + projectId + '   # from this repository; needs a checkout of dagangilat/yourbackupagent' },
-    { what: 'Prove it: rebuild drill (from the app, or here)', cmd: 'backup-kit/backup.sh rebuild' },
+    { what: 'Once per Mac: a copy of the kit repository', cmd: 'gh repo clone dagangilat/yourbackupagent' },
+    { what: 'Then, from that folder: log in, GitHub key, buckets, protection, first backup, app access, rebuild drill, merge', cmd: `cd yourbackupagent && git pull -q && ./onboard.sh ${repo}` },
   ];
 }
 

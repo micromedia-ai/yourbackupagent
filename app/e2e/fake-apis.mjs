@@ -1,4 +1,4 @@
-// Fake GitHub + Google (Resource Manager, Cloud Run) for the offline
+// Fake GitHub + Google (Resource Manager, Cloud Run) + Resend for the offline
 // end-to-end test. Records every change it is asked for in `calls`.
 import http from 'node:http';
 import { readFileSync } from 'node:fs';
@@ -23,6 +23,7 @@ DRILL_PROJECT=demo-drill
 
 export function startFakes(port = 4999) {
   const calls = [];
+  const emails = [];
   const files = {
     'dagangilat/foundation-next': { 'backup-kit/backup.env': ENV, 'firebase.json': '{}', '.firebaserc': '{"projects":{"prod":"demo-fn"}}' },
     'dagangilat/your-content-creator': { 'firebase.json': '{}', '.firebaserc': '{"projects":{"default":"yourcontentcreator-f7ef5"}}' },
@@ -62,10 +63,12 @@ export function startFakes(port = 4999) {
     if (p.match(/\/git\/refs$/)) return send(201, {});
     if (p.match(/\/pulls$/) && req.method === 'GET') return send(200, []);
     if (p.match(/\/pulls$/)) return send(201, { number: 42, html_url: 'https://github.com/x/pull/42' });
+    // Resend
+    if (p === '/emails' && req.method === 'POST') { emails.push({ ...json, auth: req.headers.authorization }); return send(200, { id: `em_${emails.length}` }); }
     // Google
     if (p === '/v3/projects/demo-drill') return send(200, { labels });
     if (p.match(/\/jobs\/kit-runner:run$/)) return send(200, { name: 'op1', metadata: { name: 'projects/a/locations/us-central1/jobs/kit-runner/executions/exec-1' } });
     return send(404, { message: `fake: no route ${req.method} ${p}` });
   });
-  return new Promise((resolve) => server.listen(port, '127.0.0.1', () => resolve({ server, calls, setLabels: (l) => { labels = l; } })));
+  return new Promise((resolve) => server.listen(port, '127.0.0.1', () => resolve({ server, calls, emails, setLabels: (l) => { labels = l; } })));
 }

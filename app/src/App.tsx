@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { onAuthStateChanged, type User } from 'firebase/auth';
-import { auth, call, initFirebase, logOut, signIn } from './lib/firebase';
+import { auth, call, initFirebase, logOut } from './lib/firebase';
 import { link, usePath } from './lib/route';
 import { Overview } from './pages/Overview';
 import { ProjectPage } from './pages/Project';
@@ -8,6 +8,8 @@ import { LogPage } from './pages/Log';
 import { Reports } from './pages/Reports';
 import { Settings } from './pages/Settings';
 import { Protect } from './pages/Protect';
+import { Landing } from './pages/Landing';
+import { RequestAccess } from './pages/RequestAccess';
 
 const NAV = [
   ['/', 'Overview'],
@@ -21,12 +23,17 @@ export function App() {
   const [user, setUser] = useState<User | null>(null);
   const [err, setErr] = useState('');
   const [allowed, setAllowed] = useState<boolean | null>(null);
+  const [checks, setChecks] = useState(0);
   const path = usePath();
 
   useEffect(() => {
-    if (!user) { setAllowed(null); return; }
-    call('hello').then(() => setAllowed(true)).catch((e) => { setAllowed(false); setErr(e.message); });
-  }, [user]);
+    setAllowed(null);
+    if (!user) return;
+    call('hello').then(() => setAllowed(true)).catch((e) => {
+      setAllowed(false);
+      if (e.code !== 'functions/permission-denied') setErr(e.message);
+    });
+  }, [user, checks]);
 
   useEffect(() => {
     initFirebase()
@@ -35,18 +42,9 @@ export function App() {
   }, []);
 
   if (!ready) return <div className="center muted">Loading…</div>;
-  if (err) return <div className="center"><p className="banner bad">{err}</p>{user && <button className="btn" onClick={() => { setErr(''); logOut(); }}>Sign out</button>}</div>;
-  if (!user) {
-    return (
-      <div className="center signin">
-        <img src="/icon.svg" width={48} height={48} alt="" />
-        <h1>YourBackupAgent</h1>
-        <p className="muted">Backups of every project, in one place. Sign in with the Google account on the access list.</p>
-        <button className="btn primary" onClick={() => signIn().catch((e) => setErr(e.message))}>Sign in with Google</button>
-      </div>
-    );
-  }
-
+  if (err && user) return <div className="center"><p className="banner bad">{err}</p><button className="btn" onClick={() => { setErr(''); logOut(); }}>Sign out</button></div>;
+  if (!user) return <Landing onSignIn={() => setErr('')} error={err} />;
+  if (allowed === false) return <RequestAccess user={user} onApproved={() => setChecks((c) => c + 1)} />;
   if (allowed !== true) return <div className="center muted">Checking access…</div>;
 
   const section = path === '/' ? '/' : '/' + path.split('/')[1];

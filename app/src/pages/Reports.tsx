@@ -1,28 +1,76 @@
-import { useAllSets, useLog, useProjects, daily } from '../lib/data';
+import { useState } from 'react';
+import { useAllSets, useLog, useProjects, daily, dayKeys, statusCells } from '../lib/data';
 import { bytes, monthlyCost, num, runDate, when, ago, tsDate } from '../lib/format';
-import { Bars, Line } from '../components/charts';
+import { Bars, HBars, Line, StatusGrid } from '../components/charts';
 import { Pill, statusTone } from '../components/ui';
-import { PROJECT_COLORS } from './Overview';
+import { Kpis, PROJECT_COLORS } from './Overview';
+import { LogList } from './Log';
 
 export function Reports() {
   const { rows: projects } = useProjects();
   const sets = useAllSets();
   const { rows: log } = useLog(300);
+  const [days, setDays] = useState(30);
   if (!projects || !sets) return <p className="muted">Loading…</p>;
-  const since = Date.now() - 30 * 86400000;
+  const since = Date.now() - days * 86400000;
+  const k = dayKeys(days);
+  const counts = (status: string) => k.keys.map((key) => sets.filter((s) => s.inProject && s.id.startsWith(key) && (status === 'good' ? s.status === 'succeeded' : s.status !== 'succeeded')).length);
+  const drills = (log || []).filter((l) => /^(rebuild|restore) drill/.test(l.action) && (tsDate(l.at)?.getTime() || 0) >= since);
+  const ageH = (p: (typeof projects)[number]) => (p.health?.newestGood ? (Date.now() - (runDate(p.health.newestGood)?.getTime() || 0)) / 3600000 : 0);
+  const maxAge = Math.max(...projects.map((p) => p.maxAgeHours || 26), 26);
+  function csv() {
+    const head = ['project', 'set', 'status', 'started', 'minutes', 'documents', 'files', 'users', 'bytes', 'in_project', 'in_vault'];
+    const lines = sets!.map((s) => [s.projectId, s.id, s.status, s.startedAt || '', s.durationSec ? Math.round(s.durationSec / 60) : '', s.docs ?? '', s.files ?? '', s.users ?? '', s.bytes, s.inProject, s.inVault].join(','));
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([[head.join(','), ...lines].join('\n')], { type: 'text/csv' }));
+    a.download = `backup-sets-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+  }
   return (
     <div className="stack">
-      <h1>Reports</h1>
+      <div className="row between wrap">
+        <h1>Reports</h1>
+        <div className="row">
+          <div className="seg" role="group" aria-label="Period">
+            {[7, 30, 90].map((n) => <button key={n} className={n === days ? 'on' : ''} onClick={() => setDays(n)}>{n} days</button>)}
+          </div>
+          <button className="btn" onClick={csv}>Download CSV</button>
+        </div>
+      </div>
+      <Kpis days={days} />
+      <section className="panel">
+        <h4>Every night, last {days} days</h4>
+        <StatusGrid days={days} dayLabels={k.labels} rows={projects.map((p) => ({ label: p.label, cells: statusCells(sets, p.projectId, k.keys) }))} />
+      </section>
+      <div className="split">
+        <section className="panel">
+          <h4>Runs per day</h4>
+          <Bars labels={k.labels} unit={(v) => String(Math.round(v))} series={[{ label: 'good', color: 'var(--ok)', values: counts('good') }, { label: 'failed or incomplete', color: 'var(--bad)', values: counts('bad') }]} />
+          <div className="legend"><span><i style={{ background: 'var(--ok)' }} />good</span><span><i style={{ background: 'var(--bad)' }} />failed or incomplete</span></div>
+        </section>
+        <section className="panel">
+          <h4>Hours since the newest good backup</h4>
+          <HBars rows={projects.map((p) => { const h = ageH(p); return { label: p.label, value: h, tone: h > (p.maxAgeHours || 26) ? 'var(--bad)' : 'var(--ok)' }; })} unit={(v) => `${Math.round(v)}h`} limit={maxAge} limitLabel={`the ${maxAge}h limit a check fails at`} />
+        </section>
+        <section className="panel">
+          <h4>Stored per project (project bucket + vault)</h4>
+          <HBars rows={projects.map((p, i) => ({ label: p.label, value: p.totals?.bytes || 0, tone: PROJECT_COLORS[i % 4] }))} unit={bytes} />
+        </section>
+        <section className="panel">
+          <h4>Drills, last {days} days</h4>
+          {drills.length ? <LogList rows={drills.slice(0, 8)} compact /> : <p className="muted">No drills in this period.</p>}
+        </section>
+      </div>
       <div className="tscroll">
         <table>
-          <thead><tr><th>Project</th><th>Health</th><th className="n">Good runs, 30 days</th><th className="n">Newest good</th><th className="n">Median run</th><th className="n">Drills, 30 days</th><th className="n">Stored</th><th className="n">Per month</th></tr></thead>
+          <thead><tr><th>Project</th><th>Health</th><th className="n">Good runs, {days} days</th><th className="n">Newest good</th><th className="n">Median run</th><th className="n">Drills, {days} days</th><th className="n">Stored</th><th className="n">Per month</th></tr></thead>
           <tbody>
             {projects.map((p) => {
               const mine = sets.filter((s) => s.projectId === p.projectId && s.inProject);
               const recent = mine.filter((s) => (runDate(s.id)?.getTime() || 0) >= since);
               const good = recent.filter((s) => s.status === 'succeeded');
               const durs = good.map((s) => s.durationSec || 0).filter(Boolean).sort((a, b) => a - b);
-              const drills = (log || []).filter((l) => l.project === p.projectId && /drill/.test(l.action) && (tsDate(l.at)?.getTime() || 0) >= since);
+              const drills = (log || []).filter((l) => l.project === p.projectId && /^(rebuild|restore) drill/.test(l.action) && (tsDate(l.at)?.getTime() || 0) >= since);
               return (
                 <tr key={p.projectId}>
                   <td>{p.label}</td>
@@ -40,7 +88,7 @@ export function Reports() {
         </table>
       </div>
       {(() => {
-        const d = daily(sets, projects.map((p) => p.projectId), 30, (s) => s.durationSec ? s.durationSec / 60 : 0);
+        const d = daily(sets, projects.map((p) => p.projectId), days, (s) => s.durationSec ? s.durationSec / 60 : 0);
         return (
           <section className="panel"><h4>Run length per day (minutes)</h4>
             <Bars width={1100} height={170} labels={d.labels} flags={d.failed} unit={(v) => `${Math.round(v)}m`} series={projects.map((p, i) => ({ label: p.label, color: PROJECT_COLORS[i % 4], values: d.values[i] }))} />

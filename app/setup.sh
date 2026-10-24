@@ -9,6 +9,8 @@
 #   app/setup.sh runner            build and deploy the kit runner job
 #   app/setup.sh grant PROJECT_ID  let the app read and prune PROJECT_ID's backups,
 #                                  read its vault copies and use the drill project
+#   app/setup.sh email             turn on email alerts: the Resend API key (asks for it,
+#                                  or --from PROJECT copies RESEND_API_KEY from there)
 #   app/setup.sh deploy            build and deploy the web app, API and rules
 #   app/setup.sh status            what exists
 #
@@ -108,6 +110,41 @@ cmd_token() {
     --member="serviceAccount:$RUNNER_SA" --role=roles/secretmanager.secretAccessor --quiet --format=none
 }
 
+MAIL_DOMAIN="${MAIL_DOMAIN:-plantagoai.com}"
+
+put_secret() { # put_secret NAME (value on stdin)
+  if "${G[@]}" secrets describe "$1" --project "$APP_PROJECT" >/dev/null 2>&1; then
+    run "${G[@]}" secrets versions add "$1" --data-file=- --project "$APP_PROJECT" --format=none
+  else
+    run "${G[@]}" secrets create "$1" --data-file=- --replication-policy=automatic --project "$APP_PROJECT" --format=none
+  fi
+  run "${G[@]}" secrets add-iam-policy-binding "$1" --project "$APP_PROJECT" \
+    --member="serviceAccount:$RUNNER_SA" --role=roles/secretmanager.secretAccessor --quiet --format=none
+}
+
+cmd_email() {
+  info "Email alerts (secret RESEND_API_KEY in $APP_PROJECT, sender backups@$MAIL_DOMAIN)"
+  local k="" from=""
+  if [ "${1:-}" = "--from" ]; then
+    from="${2:-}"; [ -n "$from" ] || die "usage: app/setup.sh email [--from PROJECT_ID]"
+    k="$(gcloud secrets versions access latest --secret=RESEND_API_KEY --project "$from")" || die "cannot read RESEND_API_KEY in $from"
+  else
+    say "  The Resend API key that sends for $MAIL_DOMAIN (resend.com/api-keys)."
+    printf '  Paste it (not shown): '
+    read -rs k; printf '\n'
+  fi
+  [[ "$k" =~ ^re_ ]] || die "that does not look like a Resend key (starts with re_)"
+  printf '%s' "$k" | put_secret RESEND_API_KEY
+  local st
+  st="$(curl -s -H "Authorization: Bearer $k" https://api.resend.com/domains | jq -r --arg d "$MAIL_DOMAIN" '[.data[]? | select(.name == $d) | .status][0] // "unknown"')"
+  case "$st" in
+    verified) say "  $MAIL_DOMAIN is verified in Resend." ;;
+    unknown) say "  Could not list Resend domains with this key (a sending-only key can't). If $MAIL_DOMAIN is verified there, it works." ;;
+    *) say "  WARNING: $MAIL_DOMAIN is '$st' in Resend; emails fail until it is verified." ;;
+  esac
+  say "  Next: app/setup.sh deploy, then Settings -> Email alerts -> Send me a test."
+}
+
 cmd_runner() {
   info "Kit runner job $RUNNER ($IMAGE)"
   if ! "${G[@]}" artifacts repositories describe yourbackupagent --location "$REGION" --project "$APP_PROJECT" >/dev/null 2>&1; then
@@ -158,7 +195,11 @@ cmd_deploy() {
     run "${F[@]}" hosting:sites:create "$APP_PROJECT" --project "$APP_PROJECT"
   fi
   (cd "$APP_DIR" && run npm ci && run npm run build && cd functions && run npm ci --omit=dev)
-  printf 'RUNNER_SA=%s\nOWNER_EMAILS=%s\n' "$RUNNER_SA" "$OWNER" >"$APP_DIR/functions/.env.$APP_PROJECT"
+  if ! "${G[@]}" secrets describe RESEND_API_KEY --project "$APP_PROJECT" >/dev/null 2>&1; then
+    say "  Email alerts are off until app/setup.sh email (storing a placeholder key)."
+    printf 'none' | put_secret RESEND_API_KEY
+  fi
+  printf 'RUNNER_SA=%s\nOWNER_EMAILS=%s\nMAIL_FROM="%s"\nAPP_URL=%s\n' "$RUNNER_SA" "$OWNER" "YourBackupAgent <backups@$MAIL_DOMAIN>" "https://$APP_PROJECT.web.app" >"$APP_DIR/functions/.env.$APP_PROJECT"
   (cd "$APP_DIR" && run "${F[@]}" deploy --project "$APP_PROJECT" --only hosting,firestore,functions --force)
   say "  Open https://$APP_PROJECT.web.app and sign in as $OWNER."
 }
@@ -176,7 +217,8 @@ case "${1:-}" in
   token) cmd_token ;;
   runner) cmd_runner ;;
   grant) shift; cmd_grant "${1:-}" ;;
+  email) shift; cmd_email "$@" ;;
   deploy) cmd_deploy ;;
   status) cmd_status ;;
-  *) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+  *) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac

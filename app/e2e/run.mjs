@@ -69,8 +69,8 @@ async function main() {
   freePorts();
   await portsFree();
   // Functions settings for the emulator only (removed afterwards).
-  writeFileSync(`${APP}functions/.env.local`, 'GITHUB_API=http://127.0.0.1:4999\nFAKE_GOOGLE_API=http://127.0.0.1:4999\nRUNNER_SA=runner@demo-yba.iam.gserviceaccount.com\nOWNER_EMAILS=dagan.gilat@gmail.com\nSTORAGE_EMULATOR_HOST=http://127.0.0.1:9199\n');
-  writeFileSync(`${APP}functions/.secret.local`, 'GITHUB_TOKEN=fake-token\n');
+  writeFileSync(`${APP}functions/.env.local`, 'GITHUB_API=http://127.0.0.1:4999\nFAKE_GOOGLE_API=http://127.0.0.1:4999\nRUNNER_SA=runner@demo-yba.iam.gserviceaccount.com\nOWNER_EMAILS=dagan.gilat@gmail.com\nSTORAGE_EMULATOR_HOST=http://127.0.0.1:9199\nRESEND_API=http://127.0.0.1:4999\nAPP_URL=http://127.0.0.1:5055\nMAIL_FROM="YourBackupAgent <backups@plantagoai.com>"\n');
+  writeFileSync(`${APP}functions/.secret.local`, 'GITHUB_TOKEN=fake-token\nRESEND_API_KEY=re_fake\n');
   execSync('npx vite build', { cwd: APP, stdio: 'inherit', env: { ...process.env, VITE_USE_EMULATORS: 'true' } });
   const fakes = await startFakes();
   const emu = spawn('sh', ['-c', `${FIREBASE} emulators:start --project demo-yba`], { cwd: APP, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -101,8 +101,9 @@ async function main() {
     page.on('console', (m) => m.type() === 'error' && console.log('console:', m.text()));
     page.on('requestfailed', (r) => console.log('requestfailed:', r.url()));
     await page.goto('http://127.0.0.1:5055/');
-    await page.getByText('Sign in with Google').waitFor();
-    await page.screenshot({ path: `${SHOTS}/0-sign-in.png` });
+    await page.getByRole('button', { name: 'Sign in with Google' }).waitFor();
+    check('signed out: the landing page says invite only and lists what it does', await page.getByText('Invite only').count() > 0 && await page.locator('.feature').count() === 6);
+    await page.screenshot({ path: `${SHOTS}/0-landing.png`, fullPage: true });
 
     await page.evaluate(() => window.__testSignIn('dagan.gilat@gmail.com'));
     await page.getByRole('heading', { name: 'Overview' }).waitFor({ timeout: 30000 });
@@ -115,6 +116,7 @@ async function main() {
     check('refresh reads the project from its repository backup.env', true);
     check('health is shown (newest run failed -> warning)', (await card.textContent()).includes('The newest run failed'), await card.textContent());
     check('drill slot shows who holds the drill project', await page.getByText('holds a drill of other-app').count() > 0);
+    check('overview: 5 headline numbers, the attention bar and the nightly grid', await page.locator('.kpi').count() === 5 && await page.locator('.attention', { hasText: 'Foundation Next' }).count() === 1 && await page.locator('.sgrid .cell.failed').count() >= 1);
     await page.screenshot({ path: `${SHOTS}/1-overview.png`, fullPage: true });
 
     await card.click();
@@ -178,7 +180,10 @@ async function main() {
     await page.goto('http://127.0.0.1:5055/reports');
     await page.getByRole('heading', { name: 'Reports' }).waitFor();
     await page.locator('svg.chart').first().waitFor();
-    check('reports draw charts', await page.locator('svg.chart').count() >= 3);
+    check('reports draw charts', await page.locator('svg.chart').count() >= 3 && await page.locator('.hbar').count() >= 2);
+    await page.getByRole('button', { name: '7 days' }).click();
+    check('reports switch to 7 days', await page.getByText('Every night, last 7 days').count() === 1 && await page.locator('.sgrid .cell').count() === 7);
+    await page.getByRole('button', { name: '30 days' }).click();
     await page.screenshot({ path: `${SHOTS}/6-reports.png`, fullPage: true });
 
     await page.goto('http://127.0.0.1:5055/protect');
@@ -191,6 +196,7 @@ async function main() {
     const envFile = tree && tree.body.tree.find((f) => f.path === 'backup-kit/backup.env');
     check('the pull request carries the kit files, filled in', envFile && /PROJECT_ID=yourcontentcreator-f7ef5/.test(envFile.content) && /KEEP_MIN_SETS=7/.test(envFile.content) && /OFFSITE_BUCKET=yourbackupagent-yourcontentcreator/.test(envFile.content)
       && tree.body.tree.some((f) => f.path === '.github/workflows/backup.yml' && f.content.includes('secrets.FIREBASE_SERVICE_ACCOUNT_YCC') && f.content.includes('yourbackupagent@v1.1')));
+    check('protect shows one command to finish', (await page.locator('.code pre').allTextContents()).some((t) => t.includes('./onboard.sh dagangilat/your-content-creator')));
     await page.screenshot({ path: `${SHOTS}/7-protect.png`, fullPage: true });
 
     await page.goto('http://127.0.0.1:5055/settings');
@@ -199,13 +205,35 @@ async function main() {
     await page.getByText('Pull request opened. Merge it to apply.').waitFor({ timeout: 30000 });
     const minTree = fakes.calls.filter((c) => c.path === '/repos/dagangilat/foundation-next/git/trees').pop();
     check('changing the minimum opens a pull request with KEEP_MIN_SETS=5', minTree && /KEEP_MIN_SETS=5/.test(minTree.body.tree[0].content));
+    // Email alerts.
+    const sent = () => fakes.emails.map((e) => e.subject);
+    await page.getByRole('button', { name: 'Send me a test' }).click();
+    await page.getByText(/Sent you this week's summary/).waitFor({ timeout: 30000 });
+    const test = fakes.emails.find((e) => /^Weekly backups:/.test(e.subject));
+    check('test email: the weekly summary, to the caller only, from the plantagoai sender, with the key', test && test.to.join() === 'dagan.gilat@gmail.com' && /backups@plantagoai\.com/.test(test.from) && test.auth === 'Bearer re_fake', JSON.stringify(sent()));
+    await page.getByRole('button', { name: 'Check now' }).click();
+    await page.getByText(/Emailed: demo-fn needs attention/).waitFor({ timeout: 30000 });
+    check('check now emails that Foundation Next needs attention', sent().some((s) => /^Backups need attention: Foundation Next/.test(s)));
+    await page.getByRole('button', { name: 'Check now' }).click();
+    await page.getByText(/nothing changed since the last check/).waitFor({ timeout: 30000 });
+    check('a second check sends nothing new', sent().filter((s) => /need attention/.test(s)).length === 1);
+    // The runner job ends the rebuild drill's log line: a drill email follows.
+    await fetch(`http://127.0.0.1:8086/v1/projects/demo-yba/databases/(default)/documents/${env.LOG_DOC}?updateMask.fieldPaths=status&updateMask.fieldPaths=detail`, {
+      method: 'PATCH', headers: { authorization: 'Bearer owner', 'content-type': 'application/json' },
+      body: JSON.stringify({ fields: { status: { stringValue: 'succeeded' }, detail: { stringValue: 'rebuild: all counts match' } } }),
+    });
+    const t0 = Date.now();
+    while (!sent().some((s) => /^Rebuild drill passed: Foundation Next/.test(s)) && Date.now() - t0 < 30000) await new Promise((r) => setTimeout(r, 500));
+    check('a finished drill is emailed right away', sent().some((s) => /^Rebuild drill passed: Foundation Next/.test(s)), JSON.stringify(sent()));
+    await new Promise((r) => setTimeout(r, 5000));
+    check('exactly once (the email log line does not trigger another)', sent().filter((s) => /^Rebuild drill/.test(s)).length === 1, String(sent().filter((s) => /^Rebuild drill/.test(s)).length));
     await page.screenshot({ path: `${SHOTS}/8-settings.png`, fullPage: true });
 
     // Phone width.
     const phone = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2 });
     const pp = await phone.newPage();
     await pp.goto('http://127.0.0.1:5055/');
-    await pp.getByText('Sign in with Google').waitFor();
+    await pp.getByRole('button', { name: 'Sign in with Google' }).waitFor();
     await pp.evaluate(() => window.__testSignIn('dagan.gilat@gmail.com'));
     await pp.locator('.pcard', { hasText: 'Foundation Next' }).waitFor({ timeout: 30000 }).catch(() => {});
     await pp.screenshot({ path: `${SHOTS}/9-phone-overview.png`, fullPage: true });
@@ -216,14 +244,31 @@ async function main() {
     const wide = await pp.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
     check('phone: no sideways page scroll', !wide);
 
-    // A stranger is refused.
+    // Invite only: a stranger asks, the owner approves, the stranger gets in.
     const other = await browser.newContext();
     const op = await other.newPage();
     await op.goto('http://127.0.0.1:5055/');
-    await op.getByText('Sign in with Google').waitFor();
+    await op.getByRole('button', { name: 'Sign in with Google' }).waitFor();
     await op.evaluate(() => window.__testSignIn('stranger@example.com'));
-    await op.getByText(/not on the access list/).waitFor({ timeout: 30000 });
-    check('someone not on the access list is refused', true);
+    await op.getByRole('button', { name: 'Ask for access' }).waitFor({ timeout: 30000 });
+    check('someone not on the list gets the ask-for-access page, not the app', await op.getByRole('heading', { name: 'Overview' }).count() === 0);
+    await op.locator('#ask-note').fill('I look after the shop');
+    await op.getByRole('button', { name: 'Ask for access' }).click();
+    await op.getByText(/Asked\. The owner got an email/).waitFor({ timeout: 30000 });
+    await op.screenshot({ path: `${SHOTS}/11-ask-for-access.png` });
+    const ask = fakes.emails.find((e) => e.subject === 'stranger@example.com asks for access to YourBackupAgent');
+    check('the owner is emailed about the request', ask && ask.to.join() === 'dagan.gilat@gmail.com' && ask.html.includes('I look after the shop'));
+    await page.goto('http://127.0.0.1:5055/settings');
+    await page.locator('.requests li', { hasText: 'stranger@example.com' }).getByRole('button', { name: 'Approve' }).click();
+    await page.getByText('stranger@example.com can sign in now').waitFor({ timeout: 30000 });
+    check('approving emails the person a link', fakes.emails.some((e) => e.subject === 'You have access to YourBackupAgent' && e.to.join() === 'stranger@example.com'));
+    await op.reload();
+    await op.getByRole('heading', { name: 'Overview' }).waitFor({ timeout: 30000 });
+    check('once approved, they get into the app', true);
+    await page.locator('#invite-email').fill('friend@example.com');
+    await page.getByRole('button', { name: 'Invite' }).click();
+    await page.getByText('Invited and emailed.').waitFor({ timeout: 30000 });
+    check('invite adds the address and emails it', fakes.emails.some((e) => e.to.join() === 'friend@example.com') && (await page.locator('#emails').inputValue()).includes('friend@example.com'));
     await browser.close();
   } catch (e) {
     check('test ran to the end', false, e.stack);

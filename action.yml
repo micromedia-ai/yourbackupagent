@@ -1,0 +1,25 @@
+name: YourBackupAgent
+description: Back up, check or restore-drill a Firebase project with kit/backup.sh and the project's backup-kit/backup.env
+inputs:
+  command:
+    description: 'run (back up now), check (read-only) or drill (restore drill in a temporary database)'
+    required: true
+  env-file:
+    description: "The project's settings file"
+    default: backup-kit/backup.env
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        BACKUP_ENV: ${{ inputs.env-file }}
+        KIT_COMMAND: ${{ inputs.command }}
+        KIT_REF_USED: ${{ github.action_ref }}
+        CI: '1'
+      run: |
+        case "$KIT_COMMAND" in
+          run)   "$GITHUB_ACTION_PATH/kit/backup.sh" run --yes ;;
+          check) "$GITHUB_ACTION_PATH/kit/backup.sh" check ;;
+          drill) "$GITHUB_ACTION_PATH/kit/backup.sh" drill --here --yes ;;
+          *) echo "::error::command must be run, check or drill (got '$KIT_COMMAND')"; exit 1 ;;
+        esac

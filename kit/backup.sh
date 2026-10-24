@@ -78,7 +78,7 @@ Once per project (as a project owner)
                     soft delete on the backup bucket, a deletion lien on the project
   offsite           As $VAULT_ACCOUNT: vault project $VAULT_PROJECT and bucket
                     gs://$OFFSITE_BUCKET (keeps $OFFSITE_KEEP_DAYS days). GitHub may add
-                    files there, never read or delete them.
+                    and read files there, never overwrite or delete them.
   vault-secrets     Copy the chain secrets ($CHAIN_SECRETS)
                     from Secret Manager into the vault's Secret Manager, so they
                     survive losing $PROJECT_ID. Values are never printed or saved to disk.
@@ -539,12 +539,16 @@ cmd_offsite() {
   local loc
   loc="$(multi_region_for "$(db_location)")"
   info "Off-site bucket gs://$OFFSITE_BUCKET ($loc) in $VAULT_PROJECT, owned by $VAULT_ACCOUNT"
-  confirm "Set it up (keeps $OFFSITE_KEEP_DAYS days; GitHub may only add files)?" || die "stopped"
+  confirm "Set it up (keeps $OFFSITE_KEEP_DAYS days; GitHub may add and read files, never delete)?" || die "stopped"
   ensure_vault_project "$VAULT_PROJECT" "YourBackupAgent vault"
   vault_bucket "$OFFSITE_BUCKET" "$loc" STANDARD "$OFFSITE_KEEP_DAYS"
-  # Create-only: a leaked GitHub key can add copies but never read, overwrite or delete them.
+  # Add and read only: a leaked GitHub key can never overwrite or delete copies.
+  # Read is needed because `gcloud storage cp` looks at the destination (403
+  # storage.objects.get otherwise); the key already reads the same sets in the project.
   rrun "${GV[@]}" storage buckets add-iam-policy-binding "gs://$OFFSITE_BUCKET" \
     --member="serviceAccount:$CI_SA" --role=roles/storage.objectCreator --quiet --format=none
+  rrun "${GV[@]}" storage buckets add-iam-policy-binding "gs://$OFFSITE_BUCKET" \
+    --member="serviceAccount:$CI_SA" --role=roles/storage.objectViewer --quiet --format=none
   add_lien "$VAULT_PROJECT" "YourBackupAgent vault: off-site backups and archives" "${GV[@]}"
   say "  The next backup run copies itself to gs://$OFFSITE_BUCKET (status shows Off-site ok)."
 }

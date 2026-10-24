@@ -10,7 +10,9 @@ export const PROJECT_COLORS = ['var(--c1)', 'var(--c2)', 'var(--c3)', 'var(--c4)
 
 export function DrillSlot() {
   const slot = useDoc<{ project: string; labels: Record<string, string>; refreshedAt: any }>('drill/slot');
+  const lock = useDoc<{ project: string; action: string; by: string; at: any; until: any }>('drill/lock');
   if (!slot) return null;
+  const locked = lock && tsDate(lock.until) && (tsDate(lock.until) as Date) > new Date();
   const l = slot.labels || {};
   const of = l['drill-of'];
   const state = l['drill-data'];
@@ -19,6 +21,7 @@ export function DrillSlot() {
       <span className="label">Drill project</span> <code>{slot.project}</code>{' '}
       {!of ? <Pill tone="ok">free</Pill> : state === 'running' ? <Pill tone="warn">busy: drill of {of} running</Pill>
         : <Pill tone={state === 'passed' ? 'info' : 'bad'}>holds a drill of {of} ({state || 'unknown'}{l['drill-site'] ? `, site ${l['drill-site']}` : ''})</Pill>}
+      {locked && <> <Pill tone="warn">busy: {lock!.action} of {lock!.project}, started {ago(tsDate(lock!.at))} by {lock!.by}</Pill></>}
       <span className="muted small"> · checked {ago(tsDate(slot.refreshedAt))}</span>
     </div>
   );

@@ -158,6 +158,13 @@ async function main() {
     const env = ov ? Object.fromEntries(ov.env.map((e) => [e.name, e.value])) : {};
     check('rebuild starts the runner job with the kit command', ov && ov.args.join(' ') === `rebuild --run ${good[0]} --yes --replace`, JSON.stringify(ov && ov.args));
     check('the job gets the repository backup.env, the kit version and its log line', Buffer.from(env.BACKUP_ENV_B64 || '', 'base64').toString().includes('PROJECT_ID=demo-fn') && env.KIT_REF === 'v1.1' && /^log\/\w+$/.test(env.LOG_DOC || ''));
+    // A second rebuild while the first runs is refused (one drill at a time).
+    await page.locator('tr', { hasText: good[0] }).getByRole('button', { name: 'Restore…' }).click();
+    await page.locator('#replace').check();
+    await page.getByRole('button', { name: 'Start rebuild drill' }).click();
+    await page.getByText(/The drill project is busy: rebuild drill of demo-fn/).waitFor({ timeout: 30000 });
+    check('a second rebuild drill while one runs is refused', fakes.calls.filter((c) => c.path.endsWith('/jobs/kit-runner:run')).length === 1);
+    await page.getByRole('button', { name: 'Close' }).click();
     await page.locator('tr', { hasText: good[0] }).getByRole('button', { name: 'Restore…' }).click();
     await page.locator('#t-prod').check();
     check('production restore is a command to run, not a button', (await page.locator('.code pre').textContent()).includes(`backup-kit/backup.sh restore --to demo-fn --run ${good[0]}`));
@@ -226,6 +233,8 @@ async function main() {
     while (!sent().some((s) => /^Rebuild drill passed: Foundation Next/.test(s)) && Date.now() - t0 < 30000) await new Promise((r) => setTimeout(r, 500));
     check('a finished drill is emailed right away', sent().some((s) => /^Rebuild drill passed: Foundation Next/.test(s)), JSON.stringify(sent()));
     await new Promise((r) => setTimeout(r, 5000));
+    const lockDoc = await fetch('http://127.0.0.1:8086/v1/projects/demo-yba/databases/(default)/documents/drill/lock', { headers: { authorization: 'Bearer owner' } });
+    check('the finished drill frees the drill project', lockDoc.status === 404, String(lockDoc.status));
     check('exactly once (the email log line does not trigger another)', sent().filter((s) => /^Rebuild drill/.test(s)).length === 1, String(sent().filter((s) => /^Rebuild drill/.test(s)).length));
     // Size watch levels are saved for the next refresh (the health rule itself is unit tested).
     await page.locator('#watch-set').fill('1.5');

@@ -1348,10 +1348,22 @@ copy_drill_secrets() {
 # The drill project is shared by every project. A drill of another project
 # that was not cleaned up may still be deploying from GitHub, so replacing it
 # takes --replace.
+# A drill that is still restoring or deploying (drill-data or drill-site
+# "running", started less than 6 hours ago) is never wiped, not even by a
+# drill of the same project; --replace takes over one that died.
 drill_guard() {
-  local labels of
+  local labels of since mins
   labels="$("${GV[@]}" projects describe "$DRILL_PROJECT" --format=json 2>/dev/null | jq -c '.labels // {}')" || labels='{}'
   of="$(jq -r '.["drill-of"] // ""' <<<"$labels")"
+  since="$(jq -r '.["drill-since"] // "0"' <<<"$labels")"
+  [[ "$since" =~ ^[0-9]+$ ]] || since=0
+  if jq -e '.["drill-data"] == "running" or .["drill-site"] == "running"' <<<"$labels" >/dev/null \
+     && [ $(( $(date +%s) - since )) -lt 21600 ]; then
+    mins=$(( ($(date +%s) - since) / 60 ))
+    say "  $DRILL_PROJECT is running a drill of $of right now (started $mins min ago)"
+    [ "$REPLACE" = "1" ] && { warn "taking over the running drill of $of (--replace)"; return 0; }
+    die "a drill of $of is still running in $DRILL_PROJECT (started $mins min ago). Wait for it to finish; if it died, run this again with --replace."
+  fi
   [ -z "$of" ] || [ "$of" = "$PROJECT_ID" ] && return 0
   say "  $DRILL_PROJECT holds a drill of $of: $(jq -r '"run \(.["drill-run"] // "-"), data \(.["drill-data"] // "-"), site \(.["drill-site"] // "-")"' <<<"$labels")"
   [ "$REPLACE" = "1" ] && { warn "replacing the drill of $of (--replace)"; return 0; }
@@ -1372,7 +1384,7 @@ cmd_rebuild() {
   ensure_drill_project
   wipe_drill
   # Claim the drill project first, so a rebuild from another project stops here.
-  drill_labels "$(jq -nc --arg of "$PROJECT_ID" '{"drill-of": $of, "drill-data": "running"}')" || warn "could not label $DRILL_PROJECT as in use"
+  drill_labels "$(jq -nc --arg of "$PROJECT_ID" --arg t "$(date +%s)" '{"drill-of": $of, "drill-data": "running", "drill-since": $t}')" || warn "could not label $DRILL_PROJECT as in use"
   restore_into vault "$DRILL_PROJECT" "$src"
   [ "$DRY_RUN" = "1" ] && { say "Dry run: nothing was restored."; return 0; }
   info "Restored copy against the backup's own counts"
@@ -1386,9 +1398,18 @@ cmd_rebuild() {
   fi
   copy_drill_secrets "$src"
   [ "$DATA_ONLY" = "0" ] && [ -n "$REPO" ] || { say "  Data-only drill done. Wipe it: backup.sh cleanup --drill"; return 0; }
+  # A project without a site workflow gets a data-only drill, not a failure.
+  if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1 \
+     && ! gh api "repos/$REPO/contents/.github/workflows/$DRILL_WORKFLOW" --silent >/dev/null 2>&1; then
+    say "  $REPO has no .github/workflows/$DRILL_WORKFLOW, so the site part is skipped: data-only drill done."
+    say "  Add one from the kit's templates/rebuild-drill.yml to prove the site too. Wipe this drill: backup.sh cleanup --drill"
+    return 0
+  fi
   [ -n "$CI_SA" ] || die "CI_SA is empty in $ENV_FILE (the GitHub deploy service account)"
   info "Site deploy (GitHub Actions, about 30-90 minutes)"
   rrun "${GV[@]}" projects add-iam-policy-binding "$DRILL_PROJECT" --member="serviceAccount:$CI_SA" --role=roles/owner --condition=None --quiet --format=none
+  # The workflow sets drill-site to passed or failed when it ends.
+  drill_labels "$(jq -nc --arg t "$(date +%s)" '{"drill-site": "running", "drill-since": $t}')" || warn "could not mark the site deploy as running"
   if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
     run gh workflow run "$DRILL_WORKFLOW" --repo "$REPO" --ref main -f project="$DRILL_PROJECT" -f run="$id" \
       || die "could not start the workflow; start it by hand: Actions -> Rebuild drill -> project $DRILL_PROJECT, run $id"

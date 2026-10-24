@@ -110,6 +110,13 @@ expect "drill --here never imports into (default)" '! grep -q "(default):importD
 : >"$T/calls.log"
 FAKE_LABELS='{"drill-of":"other-app","drill-data":"passed"}' bk rebuild --data-only --yes
 expect "rebuild refuses while another project's drill is there" '[ $? -ne 0 ] && grep -q "in use by a drill of other-app" "$T/out" && ! grep -q "importDocuments" "$T/calls.log"' "$T/out"
+NOW_S="$(date +%s)"
+FAKE_LABELS="{\"drill-of\":\"demo-app\",\"drill-data\":\"running\",\"drill-since\":\"$NOW_S\"}" bk rebuild --data-only --yes
+expect "rebuild refuses while a drill of the same project is still running" '[ $? -ne 0 ] && grep -q "is still running" "$T/out" && ! grep -q "importDocuments" "$T/calls.log"' "$T/out"
+FAKE_LABELS="{\"drill-of\":\"demo-app\",\"drill-data\":\"passed\",\"drill-site\":\"running\",\"drill-since\":\"$NOW_S\"}" bk rebuild --data-only --yes
+expect "and while its site deploy is still running" '[ $? -ne 0 ] && grep -q "is still running" "$T/out"' "$T/out"
+FAKE_LABELS="{\"drill-of\":\"demo-app\",\"drill-data\":\"running\",\"drill-since\":\"$((NOW_S - 30000))\"}" bk rebuild --data-only --yes
+expect "a running label older than 6 hours is a dead drill and does not block" '[ $? -eq 0 ] && grep -q "DATA RESTORE PASSED" "$T/out"' "$T/out"
 FAKE_LABELS='{"drill-of":"other-app","drill-data":"passed"}' bk rebuild --data-only --yes --replace
 expect "--replace takes it over" '[ $? -eq 0 ] && grep -q "DATA RESTORE PASSED" "$T/out"' "$T/out"
 

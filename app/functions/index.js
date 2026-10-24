@@ -16,6 +16,7 @@ import { github } from './lib/github.js';
 import { listSets, deleteSet, drillLabels, runJob } from './lib/cloud.js';
 import { parseEnv, projectSettings, setEnvValue } from './lib/env.js';
 import { canDelete, health, prunePlan, RUN_ID } from './lib/sets.js';
+import { lockBlocks, endsLock, LOCK_HOURS } from './lib/drilllock.js';
 import { firebaseProject, pickDeploySecret, kitFiles, setupCommands, TEMPLATE_PATHS, KIT_REPO } from './lib/protect.js';
 import { sendMail } from './lib/mail.js';
 import { healthEvents, levels, drillFinished, healthEmail, drillEmail, weeklyEmail, accessRequestEmail, welcomeEmail, EMAIL_RE } from './lib/alerts.js';
@@ -244,6 +245,9 @@ async function checkAlerts(by) {
 // Drill results, as soon as a drill's log line finishes (from the runner job,
 // a GitHub drill run read on refresh, or the app).
 export const drillAlert = onDocumentWritten({ document: 'log/{id}', region: REGION, secrets: [RESEND_API_KEY], serviceAccount: RUNNER_SA }, async (ev) => {
+  const after = ev.data.after.exists ? ev.data.after.data() : null;
+  const lockRef = db.doc('drill/lock');
+  if (endsLock((await lockRef.get()).data(), ev.params.id, after)) await lockRef.delete();
   const d = drillFinished(ev.data.before.exists ? ev.data.before.data() : null, ev.data.after.exists ? ev.data.after.data() : null);
   if (!d) return;
   const n = await notifySettings();
@@ -407,7 +411,17 @@ export const act = onCall(opts, async (req) => {
       const args = action === 'rebuild'
         ? ['rebuild', '--run', runIds[0], '--yes', ...(replace ? ['--replace'] : [])]
         : ['cleanup', '--drill', '--yes'];
-      const ref = await logStart(by, action === 'rebuild' ? 'rebuild drill' : 'wipe drill project', { project: p.projectId, runIds: action === 'rebuild' ? [runIds[0]] : [], where: p.drillProject });
+      const what = action === 'rebuild' ? 'rebuild drill' : 'wipe drill project';
+      const ref = db.collection('log').doc();
+      const lockRef = db.doc('drill/lock');
+      // One drill at a time: a second click, or a drill of any other project,
+      // waits until this one's log line ends.
+      await db.runTransaction(async (tx) => {
+        const busy = lockBlocks((await tx.get(lockRef)).data());
+        if (busy) throw new HttpsError('failed-precondition', busy);
+        tx.set(lockRef, { project: p.projectId, by, action: what, log: ref.id, at: new Date(), until: new Date(Date.now() + LOCK_HOURS * 3600000) });
+      });
+      await ref.set({ at: FieldValue.serverTimestamp(), by, action: what, status: 'started', project: p.projectId, runIds: action === 'rebuild' ? [runIds[0]] : [], where: p.drillProject });
       try {
         const execution = await runJob({
           project: process.env.GCLOUD_PROJECT, region: REGION, job: JOB, args,
@@ -417,6 +431,7 @@ export const act = onCall(opts, async (req) => {
         return { ok: true, log: ref.id };
       } catch (e) {
         await logEnd(ref, 'failed', e.message);
+        await lockRef.delete().catch(() => {});
         throw new HttpsError('internal', e.message);
       }
     }

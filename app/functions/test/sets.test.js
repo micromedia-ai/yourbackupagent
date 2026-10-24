@@ -71,3 +71,15 @@ test('health: size watch levels warn, 0 turns them off', () => {
   assert.equal(health(sets, { now, maxSetBytes: 3e9, maxTotalBytes: 20e9, totalBytes: 21e9 }).text, 'Backups take 21 GB (watch level 20 GB)');
   assert.equal(health(sets, { now, maxSetBytes: 0, maxTotalBytes: 0, totalBytes: 99e9 }).level, 'ok');
 });
+
+test('drill lock: busy until the log line ends or the lock expires', async () => {
+  const { lockBlocks, endsLock } = await import('../lib/drilllock.js');
+  const now = new Date('2026-10-24T22:30:00Z');
+  const lock = { project: 'demo-fn', by: 'a@b.c', action: 'rebuild drill', log: 'L1', at: new Date('2026-10-24T22:00:00Z'), until: new Date('2026-10-25T04:00:00Z') };
+  assert.match(lockBlocks(lock, now), /busy: rebuild drill of demo-fn, started by a@b\.c 30 min ago/);
+  assert.equal(lockBlocks({ ...lock, until: new Date('2026-10-24T22:29:00Z') }, now), null);
+  assert.equal(lockBlocks(null, now), null);
+  assert.equal(endsLock(lock, 'L1', { action: 'rebuild drill', status: 'succeeded' }), true);
+  assert.equal(endsLock(lock, 'L1', { action: 'rebuild drill', status: 'running' }), false);
+  assert.equal(endsLock(lock, 'L2', { action: 'rebuild drill', status: 'failed' }), false);
+});

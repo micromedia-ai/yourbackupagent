@@ -28,6 +28,13 @@ say() { printf '%s\n' "$*"; }
 info() { printf '\n==> %s\n' "$*"; }
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 run() { printf '  + %s\n' "$*" >&2; "$@"; }
+retry() { # retry CMD...: a few tries 20s apart (new IAM accounts appear slowly)
+  local n=1
+  until "$@"; do
+    [ "$n" -lt 4 ] || return 1
+    say "  (not ready yet, trying again in 20s)"; n=$((n + 1)); sleep 20
+  done
+}
 G=(gcloud --account="$OWNER")
 F=(firebase --account "$OWNER")
 
@@ -67,14 +74,16 @@ cmd_create() {
   if ! "${G[@]}" iam service-accounts describe "$RUNNER_SA" --project "$APP_PROJECT" >/dev/null 2>&1; then
     run "${G[@]}" iam service-accounts create "$RUNNER" --project "$APP_PROJECT" \
       --display-name="YourBackupAgent runner (manager app + kit runner job)"
+    say "  Waiting for the new account to show up in IAM (can take a minute)"
+    sleep 30
   fi
   local role
   # Its own project: the database, start its job, write logs.
   for role in roles/datastore.user roles/run.developer roles/logging.logWriter roles/iam.serviceAccountTokenCreator; do
-    run "${G[@]}" projects add-iam-policy-binding "$APP_PROJECT" --member="serviceAccount:$RUNNER_SA" --role="$role" --condition=None --quiet --format=none
+    retry run "${G[@]}" projects add-iam-policy-binding "$APP_PROJECT" --member="serviceAccount:$RUNNER_SA" --role="$role" --condition=None --quiet --format=none
   done
   # Start executions of the job as itself.
-  run "${G[@]}" iam service-accounts add-iam-policy-binding "$RUNNER_SA" --project "$APP_PROJECT" \
+  retry run "${G[@]}" iam service-accounts add-iam-policy-binding "$RUNNER_SA" --project "$APP_PROJECT" \
     --member="serviceAccount:$RUNNER_SA" --role=roles/iam.serviceAccountUser --quiet --format=none
   say ""
   say "  Next, in the Firebase console (console.firebase.google.com/project/$APP_PROJECT/authentication/providers):"

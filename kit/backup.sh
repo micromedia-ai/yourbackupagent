@@ -591,7 +591,7 @@ step_storage() {
   local dest="$1" b n
   for b in $(storage_buckets); do
     info "Storage gs://$b -> storage/$b"
-    rrun gcloud storage rsync -r "gs://$b" "$dest/storage/$b" --quiet || return 1
+    rqrun gcloud storage rsync -r "gs://$b" "$dest/storage/$b" --quiet || return 1
     n="$(object_count_as "$dest/storage/$b" gcloud)"
     mset --arg b "$b" --argjson n "${n:-0}" '.storage[$b] = {objects: $n}'
     say "  $n files"
@@ -792,7 +792,7 @@ do_run() {
   if [ "$required" = "1" ] && [ -n "$OFFSITE_BUCKET" ] && [ "$TRIGGER" != "archive" ]; then
     info "Off-site copy -> gs://$OFFSITE_BUCKET/runs/$id/"
     # Copies only (the service account may create files there, nothing else).
-    if run gcloud storage cp -r "$dest/*" "gs://$OFFSITE_BUCKET/runs/$id/" --quiet 2>"$WORKDIR/off.err"; then
+    if qrun gcloud storage cp -r "$dest/*" "gs://$OFFSITE_BUCKET/runs/$id/" --quiet 2>"$WORKDIR/off.err"; then
       mset '.steps.offsite = "ok"'
     else
       cat "$WORKDIR/off.err" >&2
@@ -1000,7 +1000,7 @@ restore_into() {
       esac
     fi
     info "Storage $b -> gs://$tb"
-    rrun "${g[@]}" storage rsync -r "$src/storage/$b" "gs://$tb" --quiet
+    rqrun "${g[@]}" storage rsync -r "$src/storage/$b" "gs://$tb" --quiet
     [ "$DRY_RUN" = "1" ] || printf 'storage %s %s %s\n' "$b" "$(jq -r --arg b "$b" '.storage[$b].objects' "$m")" "$(object_count_as "gs://$tb" "${g[@]}")" >>"$WORKDIR/compare"
   done
 
@@ -1288,7 +1288,7 @@ cmd_archive() {
     [ "$n" = "6" ] && die "$VAULT_ACCOUNT still cannot read gs://$BACKUP_BUCKET (permissions take a few minutes); run archive again later"
     sleep 30
   done
-  rrun "${GV[@]}" storage rsync -r "$RUN_PATH" "$dst" --exclude='manifest\.json$' --quiet
+  rqrun "${GV[@]}" storage rsync -r "$RUN_PATH" "$dst" --exclude='manifest\.json$' --quiet
   if git -C "$REPO_DIR" rev-parse --git-dir >/dev/null 2>&1; then
     info "Code: git bundle of every branch"
     git -C "$REPO_DIR" fetch --all --quiet 2>/dev/null || warn "could not fetch; bundling the local branches only"

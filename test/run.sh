@@ -75,6 +75,7 @@ expect "users.json and hash-config.json saved" '[ "$(jq length "$T/gcs/demo-app-
 expect "config snapshot hides keys" '! grep -q "AIza-secret\|a2V5" "$T/gcs/demo-app-backups/runs/$ID/config/auth-config.json" && grep -q "(set, not copied)" "$T/gcs/demo-app-backups/runs/$ID/config/auth-config.json"'
 expect "secret inventory has names only" '[ "$(jq -r ".[].name" "$T/gcs/demo-app-backups/runs/$ID/config/secrets-inventory.json" | tr "\n" " ")" = "RESEND_API_KEY EVM_RELAYER_KEY " ]'
 expect "off-site copy is complete, manifest included" '[ -f "$T/gcs/demo-vault-offsite/runs/$ID/manifest.json" ] && [ -f "$T/gcs/demo-vault-offsite/runs/$ID/auth/users.json" ] && [ -f "$T/gcs/demo-vault-offsite/runs/$ID/storage/demo-app.firebasestorage.app/products/b.webp" ]'
+expect "the log lists no file names, only counts" '! grep -q "^Copying " "$T/out" && grep -q "  2 files" "$T/out"' "$T/out"
 expect "no temp files (password hashes) left behind" '[ -z "$(find "$T" -maxdepth 1 -name "backup-kit.*")" ]'
 
 # --- check / status ------------------------------------------------------------------

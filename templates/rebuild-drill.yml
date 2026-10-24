@@ -1,0 +1,224 @@
+name: Rebuild drill
+# TEMPLATE: this is Foundation Next's rebuild drill (Vite frontend in
+# evoting-frontend/, batched functions deploy, hosting target foundation-global).
+# Copy it to a project's .github/workflows/rebuild-drill.yml and change the
+# build, secrets and deploy steps to match that project's own deploy.
+
+# Second half of a rebuild drill (see backup-kit/README.md). Start it with
+# `backup-kit/backup.sh rebuild`, which runs as the vault owner: it wipes the
+# drill project, restores a backup into it from the off-site vault, checks
+# every count, copies the chain secrets (other secrets get placeholders), and
+# gives this repository's deploy service account access to the drill project
+# only. This workflow then builds and deploys Foundation Next from main into
+# that project exactly as deploy.yml deploys production (rules, all
+# functions, hosting:foundation-global), pauses every scheduled job so the
+# copy never acts on-chain alongside production, and smoke-tests
+# https://<drill>.web.app. It never touches foundation-next-app.
+on:
+  workflow_dispatch:
+    inputs:
+      project:
+        description: 'Drill project id (must contain "drill"; backup.sh rebuild prints it)'
+        required: true
+      run:
+        description: 'Backup id that was restored (for the record)'
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rebuild-drill
+  cancel-in-progress: false
+
+jobs:
+  rebuild:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    env:
+      PROJECT: ${{ inputs.project }}
+      PRODUCTION: foundation-next-app
+      CI: '1'
+    steps:
+      - name: Check the target is the prepared drill project
+        run: |
+          [[ "$PROJECT" =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]$ ]] || { echo "::error::'$PROJECT' is not a project id"; exit 1; }
+          case "$PROJECT" in
+            "$PRODUCTION") echo "::error::$PROJECT is production"; exit 1 ;;
+            *drill*) ;;
+            *) echo "::error::$PROJECT must contain 'drill'"; exit 1 ;;
+          esac
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node 22 + auth for @plantagoai
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@plantagoai'
+
+      - name: Install firebase-tools
+        run: npm install -g firebase-tools
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_FOUNDATION_NEXT }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Drill project was restored for this repository
+        run: |
+          set -euo pipefail
+          labels=$(gcloud projects describe "$PROJECT" --format=json 2>/dev/null | jq -c '.labels // {}') || {
+            echo "::error::The deploy service account cannot see $PROJECT. Run backup-kit/backup.sh rebuild first."; exit 1; }
+          [ "$(jq -r '.["drill-of"] // ""' <<<"$labels")" = "$PRODUCTION" ] || { echo "::error::$PROJECT holds a restore of $(jq -r '.["drill-of"] // "nothing"' <<<"$labels"), not $PRODUCTION"; exit 1; }
+          [ "$(jq -r '.["drill-data"] // ""' <<<"$labels")" = "passed" ] || { echo "::error::The data restore in $PROJECT did not pass"; exit 1; }
+          echo "restored backup: $(jq -r '.["drill-run"]' <<<"$labels")"
+          gcloud services enable cloudfunctions.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com \
+            run.googleapis.com eventarc.googleapis.com pubsub.googleapis.com cloudscheduler.googleapis.com \
+            cloudtasks.googleapis.com secretmanager.googleapis.com firebasehosting.googleapis.com \
+            firebaserules.googleapis.com cloudkms.googleapis.com firebaseextensions.googleapis.com --project "$PROJECT"
+
+      - name: Web app config of the drill project
+        env:
+          ENV_CONTENT: ${{ secrets.VITE_FIREBASE_FOUNDATION_NEXT }}
+        run: |
+          set -euo pipefail
+          fb() { firebase "$@" --project "$PROJECT" --non-interactive; }
+          app_id=$(fb apps:list WEB --json | jq -r '.result[0].appId // empty')
+          [ -n "$app_id" ] || app_id=$(fb apps:create WEB "rebuild drill" --json | jq -r '.result.appId')
+          cfg=$(fb apps:sdkconfig WEB "$app_id" --json | jq -c '.result.sdkConfig')
+          # Production's build settings (Solana network, program id...) with
+          # the drill project's Firebase config. App Check's reCAPTCHA key is
+          # tied to production's domains, so the drill builds without it.
+          f=evoting-frontend/.env.production
+          printf '%s\n' "$ENV_CONTENT" | grep -vE '^(VITE_FIREBASE_|VITE_RECAPTCHA_SITE_KEY=)' > "$f" || true
+          {
+            echo "VITE_FIREBASE_PROJECT_ID=$PROJECT"
+            echo "VITE_FIREBASE_API_KEY=$(jq -r .apiKey <<<"$cfg")"
+            echo "VITE_FIREBASE_AUTH_DOMAIN=$PROJECT.firebaseapp.com"
+            echo "VITE_FIREBASE_STORAGE_BUCKET=$PROJECT.firebasestorage.app"
+            echo "VITE_FIREBASE_MESSAGING_SENDER_ID=$(jq -r .messagingSenderId <<<"$cfg")"
+            echo "VITE_FIREBASE_APP_ID=$(jq -r .appId <<<"$cfg")"
+          } >> "$f"
+          echo "API_KEY=$(jq -r .apiKey <<<"$cfg")" >> "$GITHUB_ENV"
+          # hosting:foundation-global deploys to the drill project's default site.
+          firebase target:apply hosting foundation-global "$PROJECT" --project "$PROJECT"
+          echo "web app $app_id"
+
+      - name: Build frontend
+        working-directory: evoting-frontend
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_AUTH_TOKEN_PLANTAGOAI }}
+        run: npm install && npm run build
+
+      - name: Functions settings and secrets
+        env:
+          ENV_CONTENT: ${{ secrets.FUNCTIONS_ENV_FOUNDATION_NEXT }}
+        run: |
+          set -euo pipefail
+          f="functions/.env.$PROJECT"
+          printf '%s\n' "$ENV_CONTENT" > "$f"
+          # Same string params as production (deploy.yml "Write functions .env"):
+          # chain program ids and contract addresses are public settings.
+          sed -i '/^SOLANA_RPC_URL=/d; /^OPS_GITHUB_TOKEN=/d' "$f"
+          setdefault() { grep -q "^$1=" "$f" || echo "$1=$2" >> "$f"; }
+          eval "$(grep -E '^[[:space:]]*setdefault [A-Z0-9_]+ ' .github/workflows/deploy.yml | sed 's/^[[:space:]]*//')"
+          # The drill must not start Admin -> Ops actions in this repository.
+          echo "OPS_GITHUB_TOKEN=" >> "$f"
+          echo "$(grep -c = "$f") params"
+          # Every secret the code binds must exist; backup.sh rebuild already
+          # copied the chain secrets and the production inventory.
+          for name in $(grep -rhoE "defineSecret\(['\"][A-Z0-9_]+['\"]\)" functions --include=*.js | sed -E "s/defineSecret\(['\"]([A-Z0-9_]+)['\"]\)/\1/" | sort -u); do
+            if ! gcloud secrets describe "$name" --project "$PROJECT" >/dev/null 2>&1; then
+              gcloud secrets create "$name" --replication-policy=automatic --labels=drill=copy --project "$PROJECT" --quiet >/dev/null
+              printf 'drill-placeholder' | gcloud secrets versions add "$name" --data-file=- --project "$PROJECT" --quiet >/dev/null
+              echo "placeholder secret $name"
+            fi
+          done
+
+      - name: Deploy Firestore + Storage rules and indexes
+        run: |
+          for attempt in 1 2 3; do
+            firebase deploy --project "$PROJECT" --only firestore,storage --non-interactive --force && exit 0
+            echo "::warning::rules deploy attempt $attempt failed; retrying in 60s (new project setup)"; sleep 60
+          done
+          exit 1
+
+      - name: Deploy functions (scheduled jobs paused as they appear)
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_AUTH_TOKEN_PLANTAGOAI }}
+        run: |
+          set -uo pipefail
+          # The drill has production's chain keys: keep every scheduled job
+          # paused, from the moment the deploy creates it.
+          ( while :; do
+              for j in $(gcloud scheduler jobs list --location us-east1 --project "$PROJECT" --filter='state=ENABLED' --format='value(name)' 2>/dev/null); do
+                gcloud scheduler jobs pause "${j##*/}" --location us-east1 --project "$PROJECT" --quiet >/dev/null 2>&1 && echo "paused ${j##*/}"
+              done
+              sleep 20
+            done ) &
+          PAUSER=$!
+          rc=1
+          # A first deploy into a new project hits setup races and CPU quota;
+          # a second pass only finishes what is missing.
+          for attempt in 1 2; do
+            if ./scripts/deploy-functions.sh --project "$PROJECT"; then rc=0; break; fi
+            echo "::warning::functions deploy attempt $attempt failed"; sleep 120
+          done
+          sleep 30; kill "$PAUSER" 2>/dev/null || true
+          left=$(gcloud scheduler jobs list --location us-east1 --project "$PROJECT" --filter='state=ENABLED' --format='value(name)' | wc -l)
+          echo "scheduled jobs still enabled: $left"
+          [ "$left" = "0" ] || { echo "::error::$left scheduled jobs are enabled in the drill"; rc=1; }
+          exit $rc
+
+      - name: Deploy hosting
+        if: always() && !cancelled()
+        run: firebase deploy --project "$PROJECT" --only hosting:foundation-global --non-interactive --force
+
+      - name: Check the rebuilt site
+        if: always() && !cancelled()
+        run: |
+          set -uo pipefail
+          URL="https://$PROJECT.web.app"
+          fail=0
+          code=$(curl -s -o page.html -w '%{http_code}' "$URL/")
+          if [ "$code" = "200" ] && grep -q 'id="root"' page.html; then echo "home page: ok"; else echo "::error::$URL/ answered HTTP $code"; fail=1; fi
+          want=$(node scripts/list-deployable-functions.mjs functions/index.js | wc -l)
+          got=$(gcloud functions list --project "$PROJECT" --format='value(name,state)' 2>/dev/null | grep -c ACTIVE || true)
+          echo "functions active: $got of $want"
+          [ "$got" -ge "$want" ] || { echo "::error::only $got of $want functions are active"; fail=1; }
+          code=$(curl -s -o /dev/null -w '%{http_code}' "https://firestore.googleapis.com/v1/projects/$PROJECT/databases/(default)/documents/app_config/founders?key=$API_KEY")
+          case "$code" in
+            200) echo "public read of restored data (app_config/founders): ok" ;;
+            404) echo "::warning::app_config/founders is not in the backup" ;;
+            *) echo "::error::reading app_config/founders answered HTTP $code (rules not deployed?)"; fail=1 ;;
+          esac
+          TOKEN=$(gcloud auth print-access-token)
+          base="https://firestore.googleapis.com/v1/projects/$PROJECT/databases/(default)/documents"
+          {
+            echo "### Rebuild drill: $URL (backup ${{ inputs.run }})"
+            echo ""
+            echo "functions active: $got of $want"
+            echo ""
+            echo "| collection | documents |"
+            echo "|---|---:|"
+            for c in $(curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' "$base:listCollectionIds" -d '{"pageSize":300}' | jq -r '.collectionIds[]?'); do
+              echo "| $c | $(curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' "$base:runAggregationQuery" \
+                -d "{\"structuredAggregationQuery\":{\"structuredQuery\":{\"from\":[{\"collectionId\":\"$c\"}]},\"aggregations\":[{\"alias\":\"n\",\"count\":{}}]}}" \
+                | jq -r '.[0].result.aggregateFields.n.integerValue // "?"') |"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$fail" = "0" ]; then
+            gcloud projects update "$PROJECT" --update-labels=drill-site=passed --quiet >/dev/null || true
+            echo "REBUILD DRILL PASSED: $URL"
+          else
+            gcloud projects update "$PROJECT" --update-labels=drill-site=failed --quiet >/dev/null || true
+            echo "::error::REBUILD DRILL FAILED"
+          fi
+          exit "$fail"

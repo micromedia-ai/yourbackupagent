@@ -104,6 +104,7 @@ Options
   --yes, -y         Do not ask (steps that cannot be undone still ask you to type)
   --dry-run, -n     Print what would change, change nothing
   --run ID          A backup id (default: the newest good one)
+  --replace         rebuild: replace another project's drill in the drill project
   --retries N       Attempts for each network call (default $RETRIES)
   --help, -h        This help
 
@@ -119,6 +120,7 @@ DRILL=0
 FROM=""
 TO_PROJECT=""
 DATA_ONLY=0
+REPLACE=0
 TRIGGER="${BACKUP_TRIGGER:-manual}"
 # shellcheck disable=SC2034 # ASSUME_YES and DRY_RUN are read by lib.sh
 while [ $# -gt 0 ]; do
@@ -129,6 +131,7 @@ while [ $# -gt 0 ]; do
     --here) HERE=1 ;;
     --drill) DRILL=1 ;;
     --data-only) DATA_ONLY=1 ;;
+    --replace) REPLACE=1 ;;
     --run) shift; RUN_ID="${1:-}"; [ -n "$RUN_ID" ] || die "--run needs a backup id" ;;
     --from) shift; FROM="${1:-}"; [ -n "$FROM" ] || die "--from needs offsite, archive or gs://BUCKET/PATH" ;;
     --to) shift; TO_PROJECT="${1:-}" ;;
@@ -1216,6 +1219,19 @@ copy_drill_secrets() {
   done
 }
 
+# The drill project is shared by every project. A drill of another project
+# that was not cleaned up may still be deploying from GitHub, so replacing it
+# takes --replace.
+drill_guard() {
+  local labels of
+  labels="$("${GV[@]}" projects describe "$DRILL_PROJECT" --format=json 2>/dev/null | jq -c '.labels // {}')" || labels='{}'
+  of="$(jq -r '.["drill-of"] // ""' <<<"$labels")"
+  [ -z "$of" ] || [ "$of" = "$PROJECT_ID" ] && return 0
+  say "  $DRILL_PROJECT holds a drill of $of: $(jq -r '"run \(.["drill-run"] // "-"), data \(.["drill-data"] // "-"), site \(.["drill-site"] // "-")"' <<<"$labels")"
+  [ "$REPLACE" = "1" ] && { warn "replacing the drill of $of (--replace)"; return 0; }
+  die "$DRILL_PROJECT is in use by a drill of $of. If its \"Rebuild drill\" workflow is done, wipe it from that project (backup.sh cleanup --drill), or run this again with --replace."
+}
+
 cmd_rebuild() {
   local root id src
   [ -n "$DRILL_PROJECT" ] || die "DRILL_PROJECT is empty in $ENV_FILE"
@@ -1225,9 +1241,12 @@ cmd_rebuild() {
   src="$root/$id"
   info "Rebuild drill as $VAULT_ACCOUNT: backup $id from $src -> $DRILL_PROJECT"
   say "  Only the vault and GitHub are used; $PROJECT_ID is not read or changed."
+  drill_guard
   confirm "Wipe $DRILL_PROJECT (whatever was drilled there last), restore $id into it$([ "$DATA_ONLY" = "1" ] || echo ", then deploy $REPO there")?" || die "stopped"
   ensure_drill_project
   wipe_drill
+  # Claim the drill project first, so a rebuild from another project stops here.
+  run "${GV[@]}" projects update "$DRILL_PROJECT" --update-labels="drill-of=$PROJECT_ID,drill-data=running" --quiet >/dev/null || true
   restore_into vault "$DRILL_PROJECT" "$src"
   [ "$DRY_RUN" = "1" ] && { say "Dry run: nothing was restored."; return 0; }
   info "Restored copy against the backup's own counts"

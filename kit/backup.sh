@@ -10,7 +10,7 @@
 set -euo pipefail
 
 KIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-KIT_VERSION=1
+KIT_VERSION=1.1
 # shellcheck source=lib.sh
 . "$KIT_DIR/lib.sh"
 
@@ -31,6 +31,7 @@ REPO="${REPO:-}"
 CI_SA="${CI_SA:-}"
 BACKUP_BUCKET="${BACKUP_BUCKET:-$PROJECT_ID-backups}"
 BACKUP_KEEP_DAYS="${BACKUP_KEEP_DAYS:-14}"
+KEEP_MIN_SETS="${KEEP_MIN_SETS:-7}"
 FIRESTORE_DATABASES="${FIRESTORE_DATABASES:-auto}"
 STORAGE_BUCKETS="${STORAGE_BUCKETS:-auto}"
 RTDB="${RTDB:-auto}"
@@ -61,9 +62,16 @@ Every day (GitHub Actions runs these; you can too)
   check             Fail when the newest good backup is older than ${MAX_AGE_HOURS}h or a
                     step failed; warn about missing protection (read-only)
   status            Recent runs, counts, buckets, protection (read-only)
+  prune [--vault]   Delete old backup sets: the newest $KEEP_MIN_SETS good sets are always
+                    kept, other good sets once older than $BACKUP_KEEP_DAYS days ($OFFSITE_KEEP_DAYS in the
+                    vault), failed or incomplete ones after 3 days. run does this
+                    after every good backup; --vault (as $VAULT_ACCOUNT) prunes the off-site copies.
+  delete --run ID [--vault]
+                    Delete one backup set; refused for a good set when only
+                    $KEEP_MIN_SETS good sets are left
 
 Once per project (as a project owner)
-  setup             Create gs://$BACKUP_BUCKET (keeps $BACKUP_KEEP_DAYS days) and give the
+  setup             Create gs://$BACKUP_BUCKET and give the
                     GitHub deploy service account the roles the daily backup needs
   protect           Firestore point-in-time recovery + delete protection, a daily
                     Google-managed Firestore backup (kept $MANAGED_KEEP_DAYS days), 30-day
@@ -105,6 +113,7 @@ Options
   --dry-run, -n     Print what would change, change nothing
   --run ID          A backup id (default: the newest good one)
   --replace         rebuild: replace another project's drill in the drill project
+  --vault           prune, delete: the off-site copies in gs://$OFFSITE_BUCKET
   --retries N       Attempts for each network call (default $RETRIES)
   --help, -h        This help
 
@@ -121,6 +130,7 @@ FROM=""
 TO_PROJECT=""
 DATA_ONLY=0
 REPLACE=0
+VAULT=0
 TRIGGER="${BACKUP_TRIGGER:-manual}"
 # shellcheck disable=SC2034 # ASSUME_YES and DRY_RUN are read by lib.sh
 while [ $# -gt 0 ]; do
@@ -132,11 +142,12 @@ while [ $# -gt 0 ]; do
     --drill) DRILL=1 ;;
     --data-only) DATA_ONLY=1 ;;
     --replace) REPLACE=1 ;;
+    --vault) VAULT=1 ;;
     --run) shift; RUN_ID="${1:-}"; [ -n "$RUN_ID" ] || die "--run needs a backup id" ;;
     --from) shift; FROM="${1:-}"; [ -n "$FROM" ] || die "--from needs offsite, archive or gs://BUCKET/PATH" ;;
     --to) shift; TO_PROJECT="${1:-}" ;;
     --retries) shift; RETRIES="${1:-}"; [[ "$RETRIES" =~ ^[1-9][0-9]?$ ]] || die "--retries needs a number from 1 to 99" ;;
-    status|setup|protect|offsite|vault-secrets|run|check|drill|rebuild|cleanup|restore|archive|retire)
+    status|setup|protect|offsite|vault-secrets|run|check|drill|rebuild|cleanup|restore|archive|retire|prune|delete)
       [ -z "$CMD" ] || die "one command at a time (got $CMD and $1)"
       CMD="$1" ;;
     *) usage >&2; die "unknown argument: $1" ;;
@@ -153,6 +164,10 @@ for v in BACKUP_KEEP_DAYS OFFSITE_KEEP_DAYS MAX_AGE_HOURS RUN_TIMEOUT_MIN; do
   # shellcheck disable=SC2154
   [[ "$x" =~ ^[1-9][0-9]{0,3}$ ]] || die "$v must be a whole number (got '$x')"
 done
+[[ "$KEEP_MIN_SETS" =~ ^[1-9][0-9]{0,2}$ ]] || die "KEEP_MIN_SETS must be a whole number from 1 to 999 (got '$KEEP_MIN_SETS')"
+[ "$VAULT" = "0" ] || case "$CMD" in prune|delete) ;; *) die "--vault only goes with prune or delete" ;; esac
+[ "$VAULT" = "0" ] || [ -n "$OFFSITE_BUCKET" ] || die "--vault needs OFFSITE_BUCKET in $ENV_FILE"
+[ "$CMD" != "delete" ] || [ -n "$RUN_ID" ] || die "delete needs --run ID (see: backup.sh status)"
 [[ "$MANAGED_KEEP_DAYS" =~ ^[1-9][0-9]?$ ]] && [ "$MANAGED_KEEP_DAYS" -le 98 ] || die "MANAGED_KEEP_DAYS must be 1-98"
 [ -z "$OFFSITE_BUCKET" ] || valid_bucket "$OFFSITE_BUCKET" || die "OFFSITE_BUCKET=$OFFSITE_BUCKET is not a bucket name"
 [ -z "$ARCHIVE_BUCKET" ] || valid_bucket "$ARCHIVE_BUCKET" || die "ARCHIVE_BUCKET=$ARCHIVE_BUCKET is not a bucket name"
@@ -179,7 +194,7 @@ case "$DRILL_PROJECT" in ""|*drill*) ;; *) die "DRILL_PROJECT must contain 'dril
 # Commands that run as the vault owner (the way a rebuild goes when the
 # production project and its owner's account are both gone).
 AS_VAULT=0
-case "$CMD" in rebuild) AS_VAULT=1 ;; cleanup) [ "$DRILL" = "1" ] && AS_VAULT=1 ;; esac
+case "$CMD" in rebuild) AS_VAULT=1 ;; cleanup) [ "$DRILL" = "1" ] && AS_VAULT=1 ;; prune|delete) [ "$VAULT" = "1" ] && AS_VAULT=1 ;; esac
 if [ "$AS_VAULT" = "1" ] || [ "$CMD" = "offsite" ] || [ "$CMD" = "vault-secrets" ] || [ "$CMD" = "archive" ] || [ "$CMD" = "retire" ]; then
   [ -n "$VAULT_ACCOUNT" ] && [ -n "$VAULT_PROJECT" ] || die "$CMD needs VAULT_ACCOUNT and VAULT_PROJECT in $ENV_FILE"
 fi
@@ -396,7 +411,10 @@ ensure_backup_bucket() {
       || die "could not create gs://$BACKUP_BUCKET (bucket names are global; set BACKUP_BUCKET to another name)"
   fi
   life="$WORKDIR/life.json"
-  jq -n --argjson d "$BACKUP_KEEP_DAYS" '{rule:[{action:{type:"Delete"},condition:{age:$d,matchesPrefix:["runs/"]}},{action:{type:"Delete"},condition:{age:3,matchesPrefix:["drill/"]}}]}' >"$life"
+  # No age rule on runs/: an age rule cannot count, so a long run of failed
+  # backups would delete every good set. prune (after each good run) keeps
+  # the newest KEEP_MIN_SETS good sets whatever their age.
+  jq -n '{rule:[{action:{type:"Delete"},condition:{age:3,matchesPrefix:["drill/"]}}]}' >"$life"
   rrun gcloud storage buckets update "gs://$BACKUP_BUCKET" --lifecycle-file="$life" --soft-delete-duration=30d --quiet
 }
 
@@ -820,6 +838,8 @@ cmd_run() {
   confirm "Back up $PROJECT_ID now?" || die "stopped"
   if do_run; then
     info "BACKUP SUCCEEDED: $RUN_ID"
+    # Only after a good run, so failing nights never delete anything.
+    prune_sets main "gs://$BACKUP_BUCKET/runs" "$BACKUP_KEEP_DAYS" || warn "pruning old backup sets failed; the backup itself is fine"
   else
     die "BACKUP FAILED: $RUN_ID (see the errors above)"
   fi
@@ -889,6 +909,7 @@ cmd_status() {
   info "Protection"
   protection_report
   info "Buckets"
+  say "  Keeps the newest $KEEP_MIN_SETS good sets always; other good sets $BACKUP_KEEP_DAYS days (vault $OFFSITE_KEEP_DAYS), failed or incomplete ones 3 days (backup.sh prune)"
   gcloud storage buckets describe "gs://$BACKUP_BUCKET" --format=json 2>/dev/null \
     | jq -r '"  gs://\(.name)  \(.location)  soft delete \((.soft_delete_policy.retentionDurationSeconds // "0") | tonumber / 86400 | floor) days  lifecycle: \([.lifecycle_config.rule[]? | "\(.action.type) \(.condition.matches_prefix // [] | join(",")) after \(.condition.age) days"] | join("; "))"' \
     || warn "cannot read gs://$BACKUP_BUCKET"
@@ -902,6 +923,93 @@ cmd_status() {
   fi
   info "Live counts"
   say "  Auth users: $(auth_user_count "$PROJECT_ID" || echo '?')"
+}
+
+# ---- prune / delete ---------------------------------------------------------
+# cutoff_id <days>: the run id of that many days ago (ids sort as times).
+cutoff_id() { jq -nr --argjson d "$1" '(now - $d * 86400) | strftime("%Y%m%dT%H%M%SZ")'; }
+
+# set_state <gs://root> <id> <main|vault>: succeeded, failed, incomplete (no
+# manifest) or unknown (could not read it: never deleted).
+set_state() {
+  local g=(gcloud) files st
+  [ "$3" = "main" ] || g=("${GV[@]}")
+  files="$("${g[@]}" storage ls "$1/$2/" 2>/dev/null)" || { echo unknown; return; }
+  if ! grep -q '/manifest\.json$' <<<"$files"; then echo incomplete; return; fi
+  st="$(manifest_of "$1/$2" "$3" | jq -r '.status // empty' 2>/dev/null || true)"
+  case "$st" in succeeded|failed) echo "$st" ;; *) echo unknown ;; esac
+}
+
+# prune_plan <main|vault> <gs://root> <keep days>: "<id> <state> <why>" for
+# every set to delete. The newest KEEP_MIN_SETS good sets are never listed.
+prune_plan() {
+  local where="$1" root="$2" days="$3" id st good=0 old stale
+  old="$(cutoff_id "$days")"; stale="$(cutoff_id 3)"
+  for id in $(run_ids_in "$root" "$where" | sort -r); do
+    st="$(set_state "$root" "$id" "$where")"
+    case "$st" in
+      succeeded)
+        good=$((good + 1))
+        [ "$good" -gt "$KEEP_MIN_SETS" ] && [[ "$id" < "$old" ]] && echo "$id $st older than $days days" ;;
+      failed|incomplete)
+        [[ "$id" < "$stale" ]] && echo "$id $st older than 3 days" ;;
+    esac
+  done
+  return 0
+}
+
+# good_set_count <main|vault> <gs://root>
+good_set_count() {
+  local id n=0
+  for id in $(run_ids_in "$2" "$1"); do
+    [ "$(set_state "$2" "$id" "$1")" != "succeeded" ] || n=$((n + 1))
+  done
+  echo "$n"
+}
+
+rm_set() {
+  local g=(gcloud); [ "$1" = "main" ] || g=("${GV[@]}")
+  rrun "${g[@]}" storage rm -r "$2/$3" --quiet >/dev/null
+}
+
+# prune_sets <main|vault> <gs://root> <keep days>
+prune_sets() {
+  local where="$1" root="$2" days="$3" plan n id st
+  plan="$(prune_plan "$where" "$root" "$days")"
+  info "Old backup sets in $root (keep the newest $KEEP_MIN_SETS good sets, others $days days)"
+  if [ -z "$plan" ]; then say "  nothing to delete"; return 0; fi
+  n="$(wc -l <<<"$plan" | tr -d ' ')"
+  sed 's/^/  delete /' <<<"$plan"
+  confirm "Delete these $n set(s)? (recoverable for 30 days through soft delete)" || { say "  kept them"; return 0; }
+  while read -r id st _; do
+    rm_set "$where" "$root" "$id" || { warn "could not delete $id ($st)"; return 1; }
+  done <<<"$plan"
+  say "  deleted $n set(s)"
+}
+
+vault_root() { printf 'gs://%s/runs' "$OFFSITE_BUCKET"; }
+
+cmd_prune() {
+  if [ "$VAULT" = "1" ]; then
+    check_vault_login
+    prune_sets vault "$(vault_root)" "$OFFSITE_KEEP_DAYS"
+  else
+    prune_sets main "gs://$BACKUP_BUCKET/runs" "$BACKUP_KEEP_DAYS"
+  fi
+}
+
+cmd_delete() {
+  local where=main root="gs://$BACKUP_BUCKET/runs" st n
+  if [ "$VAULT" = "1" ]; then check_vault_login; where=vault; root="$(vault_root)"; fi
+  st="$(set_state "$root" "$RUN_ID" "$where")"
+  [ "$st" != "unknown" ] || die "cannot read $root/$RUN_ID (no such set, or no access)"
+  if [ "$st" = "succeeded" ]; then
+    n="$(good_set_count "$where" "$root")"
+    [ "$n" -gt "$KEEP_MIN_SETS" ] || die "$RUN_ID is one of the last $n good sets in $root; at least $KEEP_MIN_SETS are always kept (KEEP_MIN_SETS)"
+  fi
+  confirm "Delete backup set $RUN_ID ($st) from $root? (recoverable for 30 days through soft delete)" || die "stopped"
+  rm_set "$where" "$root" "$RUN_ID" || die "could not delete $RUN_ID"
+  info "Deleted $RUN_ID from $root"
 }
 
 # ---- restore ----------------------------------------------------------------

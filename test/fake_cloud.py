@@ -133,8 +133,12 @@ def gcloud(args):
         return 0
     if pos[:2] == ["storage", "rm"]:
         p = local(pos[2].removesuffix("/**"))
+        if not p.exists():
+            return 1
         for f in files_under(p):
             f.unlink()
+        if "-r" in sys.argv and p.is_dir():
+            shutil.rmtree(p)
         return 0
     if pos[:3] == ["firestore", "backups", "list"] or pos[:4] == ["firestore", "backups", "schedules", "list"]:
         print("[]")

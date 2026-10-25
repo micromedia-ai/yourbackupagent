@@ -14,8 +14,10 @@
 #      secret YOURBACKUPAGENT_SA_KEY and commits CI_SA + the secret name
 #   4. backup-kit/backup.sh setup, protect, offsite, run (the first backup)
 #   5. app/setup.sh grant (the manager app may read and prune the backups)
-#   6. a rebuild drill into the shared drill project (asks first)
-#   7. offers to merge the pull request
+#   6. offers to merge the pull request (the nightly backup and the drill's
+#      site deploy run from the default branch)
+#   7. a rebuild drill into the shared drill project (asks first; asks again
+#      before replacing another project's finished drill there)
 # Every step can run again. Prints commands, ids and counts, never secrets.
 # bash 3.2 compatible.
 set -euo pipefail
@@ -151,6 +153,13 @@ else
   fi
   sed -i.bak -E "s/secrets\.[A-Za-z0-9_]+/secrets.$SECRET_NAME/" "$WF"
   rm -f "$ENV.bak" "$WF.bak"
+  # The drill makes CI_SA owner of the drill project: its site workflow must sign in with the same key.
+  DWF="$WORK/.github/workflows/$(val DRILL_WORKFLOW)"
+  if [ -n "$(val DRILL_WORKFLOW)" ] && [ -f "$DWF" ]; then
+    sed -i.bak -E "/credentials_json/ s/secrets\.[A-Za-z0-9_]+/secrets.$SECRET_NAME/" "$DWF"
+    rm -f "$DWF.bak"
+    git -C "$WORK" add "$DWF"
+  fi
   CI_SA="$SA"
   git -C "$WORK" add backup-kit/backup.env .github/workflows/backup.yml
   git -C "$WORK" commit -q -m "Backups: GitHub Actions signs in as $SA (secret $SECRET_NAME)"
@@ -166,6 +175,9 @@ else
 fi
 
 K="$WORK/backup-kit/backup.sh"
+# Onboard with this checkout's kit, not the version backup.env pins: setup
+# fixes reach new projects without a release. Nightly runs use the pin.
+export YOURBACKUPAGENT_DIR="$KIT_DIR"
 step "Backup bucket and roles (setup)"
 (cd "$WORK" && run "$K" setup)
 step "Point-in-time recovery, delete protection, managed backups (protect)"
@@ -190,21 +202,44 @@ step "First backup (run)"
 step "Let the manager app read and prune it (grant)"
 (cd "$WORK" && run "${YBA_APP_SETUP:-$KIT_DIR/app/setup.sh}" grant "$PROJECT_ID")
 
-DRILL_RESULT="skipped"
-if [ "$DRILL" = yes ] || { [ "$DRILL" = ask ] && ask "Prove it with a rebuild drill now (about 20-40 min)? [Y/n]" y; }; then
-  step "Rebuild drill"
-  if (cd "$WORK" && run "$K" rebuild); then DRILL_RESULT="passed"; else DRILL_RESULT="FAILED"; warn "the drill failed; the output above says where"; fi
-fi
-
-step "Done: $PROJECT_ID"
-say "  first backup: done; rebuild drill: $DRILL_RESULT"
+# Merge before the drill: the nightly backup and the drill's site deploy
+# both run from the default branch.
 if [ "$ON_PR" = 1 ]; then
   url="$(gh pr view "$BRANCH" --repo "$REPO" --json url -q .url 2>/dev/null || true)"
   say "  pull request: ${url:-$BRANCH}"
-  if [ "$DRILL_RESULT" != "FAILED" ] && ask "Merge it now, so the nightly backup starts? [y/N]" n; then
+  if ask "The first backup worked. Merge the pull request now, so the nightly backup starts? [y/N]" n; then
     run gh pr merge "$BRANCH" --repo "$REPO" --squash --delete-branch
+    ON_PR=0
   else
     say "  Merge it when you're ready: the nightly backup runs from the default branch."
   fi
 fi
+
+DRILL_RESULT="skipped"
+if [ "$DRILL" = yes ] || { [ "$DRILL" = ask ] && ask "Prove it with a rebuild drill now (about 20-40 min)? [Y/n]" y; }; then
+  step "Rebuild drill"
+  DP="$(val DRILL_PROJECT)"; DFLAGS=""
+  labels="$(gcloud --account "${VAULT:-$OWNER}" projects describe "${DP:-none}" --format=json 2>/dev/null | jq -c '.labels // {}' 2>/dev/null || true)"
+  [ -n "$labels" ] || labels='{}'
+  of="$(jq -r '.["drill-of"] // ""' <<<"$labels")"
+  since="$(jq -r '.["drill-since"] // "0"' <<<"$labels")"; [[ "$since" =~ ^[0-9]+$ ]] || since=0
+  if jq -e '.["drill-data"] == "running" or .["drill-site"] == "running"' <<<"$labels" >/dev/null \
+     && [ $(( $(date +%s) - since )) -lt 21600 ]; then
+    say "  $DP is running a drill of $of right now; run this again when it is done."
+    DRILL_RESULT="skipped (drill project busy)"
+  elif [ -n "$of" ] && [ "$of" != "$PROJECT_ID" ] \
+     && ! ask "$DP holds a finished drill of $of. Replace it with this project's? [Y/n]" y; then
+    DRILL_RESULT="skipped (kept the drill of $of)"
+  else
+    [ -n "$of" ] && [ "$of" != "$PROJECT_ID" ] && DFLAGS="--replace"
+    [ "$ON_PR" = 1 ] && [ -f "$WORK/.github/workflows/$(val DRILL_WORKFLOW)" ] \
+      && warn "the site part runs the default branch's $(val DRILL_WORKFLOW), without this pull request's changes"
+    # shellcheck disable=SC2086
+    if (cd "$WORK" && run "$K" rebuild $DFLAGS); then DRILL_RESULT="passed"; else DRILL_RESULT="FAILED"; warn "the drill failed; the output above says where"; fi
+  fi
+fi
+
+step "Done: $PROJECT_ID"
+say "  first backup: done; rebuild drill: $DRILL_RESULT"
+[ "$ON_PR" = 1 ] && say "  pull request still open: ${url:-$BRANCH}"
 [ "$DRILL_RESULT" != "FAILED" ]

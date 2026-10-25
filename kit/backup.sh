@@ -508,7 +508,8 @@ ensure_vault_project() {
 vault_bucket() {
   local b="$1" loc="$2" cls="$3" keep="$4" owner want life="$WORKDIR/vlife.json"
   if bucket_exists_as "$b" "${GV[@]}"; then
-    owner="$("${GV[@]}" storage buckets describe "gs://$b" --format='value(project_number)' 2>/dev/null || true)"
+    # --raw: gcloud's standard bucket view has no project number.
+    owner="$("${GV[@]}" storage buckets describe "gs://$b" --raw --format='value(projectNumber)' 2>/dev/null || true)"
     want="$("${GV[@]}" projects describe "$VAULT_PROJECT" --format='value(projectNumber)' 2>/dev/null || true)"
     [ "$owner" = "$want" ] || die "gs://$b exists but belongs to another project ($owner, not $VAULT_PROJECT $want)"
     info "gs://$b exists in $VAULT_PROJECT"

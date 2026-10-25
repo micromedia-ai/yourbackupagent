@@ -65,7 +65,7 @@ def gcloud(args):
             return 1
         if "json" in " ".join(flags):
             print(json.dumps({"name": pos[3][5:], "location": "US"}))
-        elif "project_number" in " ".join(flags):
+        elif "--raw" in flags and "projectNumber" in " ".join(flags):
             print("123456")
         else:
             print(pos[3][5:])

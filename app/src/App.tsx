@@ -11,6 +11,7 @@ import { Protect } from './pages/Protect';
 import { Landing } from './pages/Landing';
 import { RequestAccess } from './pages/RequestAccess';
 import { ConnectAi } from './pages/ConnectAi';
+import { Bell } from './components/Bell';
 
 const NAV = [
   ['/', 'Overview'],
@@ -68,7 +69,7 @@ export function App() {
             <a key={p} {...link(p)} className={section === p || (p === '/' && section === '/projects') ? 'on' : ''}>{label}</a>
           ))}
         </nav>
-        <span className="who">{user.email} <button className="btn ghost small" onClick={() => logOut()}>Sign out</button></span>
+        <span className="who"><Bell /> {user.email} <button className="btn ghost small" onClick={() => logOut()}>Sign out</button></span>
       </header>
       <main className="main">{page}</main>
       <nav className="bottom-nav">

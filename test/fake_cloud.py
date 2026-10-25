@@ -75,6 +75,12 @@ def gcloud(args):
         else:
             print(pos[3][5:])
         return 0
+    if pos[:3] == ["storage", "buckets", "list"]:
+        proj = next((args[i + 1] for i, a in enumerate(args) if a == "--project"), "")
+        for b in sorted(ROOT.iterdir()):
+            if b.is_dir() and proj and b.name.startswith(proj):
+                print(b.name)
+        return 0
     if pos[:3] == ["storage", "buckets", "create"]:
         local(pos[3]).mkdir(parents=True, exist_ok=True)
         return 0
@@ -163,6 +169,7 @@ def gcloud(args):
         if not p.exists():
             return 1
         for f in files_under(p):
+            print(f"Removing gs://{f.relative_to(ROOT)}...", file=sys.stderr)
             f.unlink()
         if "-r" in sys.argv and p.is_dir():
             shutil.rmtree(p)

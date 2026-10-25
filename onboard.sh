@@ -72,12 +72,18 @@ else
   run gh repo clone "$REPO" "$WORK" -- -q
 fi
 ON_PR=0
-# Work on the protect branch only while its pull request is open: once it is
-# merged, a commit pushed there would never reach the default branch.
-if git -C "$WORK" rev-parse -q --verify "refs/remotes/origin/$BRANCH" >/dev/null \
-  && [ "$(gh pr view "$BRANCH" --repo "$REPO" --json state -q .state 2>/dev/null)" = OPEN ]; then
+pr_open() {
+  git -C "$WORK" rev-parse -q --verify "refs/remotes/origin/$1" >/dev/null \
+    && [ "$(gh pr view "$1" --repo "$REPO" --json state -q .state 2>/dev/null)" = OPEN ]
+}
+# Work on the protect branch (or the key branch an earlier run opened) only
+# while its pull request is open: once it is merged, a commit pushed there
+# would never reach the default branch.
+if pr_open "$BRANCH"; then ON_PR=1
+elif pr_open yourbackupagent/ci-key; then BRANCH=yourbackupagent/ci-key; ON_PR=1
+fi
+if [ "$ON_PR" = 1 ]; then
   run git -C "$WORK" checkout -q -B "$BRANCH" "origin/$BRANCH"
-  ON_PR=1
 else
   def="$(gh repo view "$REPO" --json defaultBranchRef -q .defaultBranchRef.name)"
   run git -C "$WORK" checkout -q -B "$def" "origin/$def"

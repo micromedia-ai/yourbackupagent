@@ -31,7 +31,8 @@ case "$*" in
   "repo clone"*) git clone -q "$ORIGIN" "$4" ;;
   "secret list"*) [ -f "$LOG.secret" ] && echo YOURBACKUPAGENT_SA_KEY; true ;;
   "secret set"*) cat >/dev/null; touch "$LOG.secret" ;;
-  "pr view"*"--json state"*) if [ -f "$LOG.merged" ]; then echo MERGED; else echo OPEN; fi ;;
+  "pr view yourbackupagent/protect"*"--json state"*) if [ -f "$LOG.merged" ]; then echo MERGED; else echo OPEN; fi ;;
+  "pr view"*"--json state"*) echo OPEN ;;
   "pr view"*) echo https://github.com/x/pull/14 ;;
   "repo view"*) echo main ;;
 esac
@@ -82,6 +83,14 @@ before="$(git --git-dir="$T/origin.git" rev-parse yourbackupagent/protect)"
 [ "$(git --git-dir="$T/origin.git" rev-parse yourbackupagent/protect)" = "$before" ] || fail "pushed to the merged branch"; ok "merged PR: protect branch untouched"
 git --git-dir="$T/origin.git" show yourbackupagent/ci-key:backup-kit/backup.env | grep -qx 'CI_SA=yourbackupagent-ci@demo-p.iam.gserviceaccount.com' || fail "no ci-key branch"; ok "merged PR: key settings on a new branch"
 grep -q '^gh pr create --repo dagangilat/demo --head yourbackupagent/ci-key' "$LOG" || fail "no new PR"; ok "merged PR: a new pull request"
+
+# Run again while that key pull request is open: work on its branch, reuse
+# the key, and open no second pull request.
+: >"$LOG"
+"$ROOT/onboard.sh" dagangilat/demo --no-drill </dev/null >"$T/out4" 2>&1 || { cat "$T/out4"; fail "key-PR rerun exited non-zero"; }
+grep -q 'keys create' "$LOG" && fail "key-PR rerun made another key"; ok "open key PR: key reused"
+grep -q 'gh pr create' "$LOG" && fail "key-PR rerun opened another PR"; ok "open key PR: no second pull request"
+grep -q '^kit run' "$LOG" || fail "key-PR rerun skipped the backup"; ok "open key PR: backs up"
 
 "$ROOT/onboard.sh" not-a-repo >/dev/null 2>&1 && fail "bad repo accepted"; ok "bad repo refused"
 echo "onboard: $pass passed"

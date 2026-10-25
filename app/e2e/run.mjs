@@ -214,12 +214,49 @@ async function main() {
     check('protect lists Firebase repositories only', await page.getByText('dagangilat/notes').count() === 0 && await page.getByText('not protected').count() === 1);
     check('protect lists a repo whose Firebase app is in app/', await page.locator('#repo-dagangilat\\/limorgilat\\.com').count() === 1 && await page.getByText('limorgilat-com', { exact: true }).count() === 1);
     await page.getByRole('button', { name: 'Open the pull request' }).click();
-    await page.getByText('One-time setup for yourcontentcreator-f7ef5').waitFor({ timeout: 30000 });
+    await page.locator('#set-up-here').waitFor({ timeout: 30000 });
     const tree = fakes.calls.find((c) => c.path === '/repos/dagangilat/your-content-creator/git/trees');
     const envFile = tree && tree.body.tree.find((f) => f.path === 'backup-kit/backup.env');
     check('the pull request carries the kit files, filled in', envFile && /PROJECT_ID=yourcontentcreator-f7ef5/.test(envFile.content) && /KEEP_MIN_SETS=7/.test(envFile.content) && /OFFSITE_BUCKET=yourbackupagent-yourcontentcreator/.test(envFile.content)
       && tree.body.tree.some((f) => f.path === '.github/workflows/backup.yml' && f.content.includes('secrets.FIREBASE_SERVICE_ACCOUNT_YCC') && f.content.includes('yourbackupagent@v1.1')));
-    check('protect shows one command to finish', (await page.locator('.code pre').allTextContents()).some((t) => t.includes('./onboard.sh dagangilat/your-content-creator')));
+    await page.getByText('Or on your Mac').click();
+    check('protect still shows the one Mac command to finish', (await page.locator('.code pre').allTextContents()).some((t) => t.includes('./onboard.sh dagangilat/your-content-creator')));
+
+    // "Set it up here": a browser sign-in as the project owner (and the vault owner).
+    const jobsBefore = fakes.calls.filter((c) => c.path.endsWith('/jobs/kit-runner:run')).length;
+    await page.evaluate(() => { window.__testCloudSignIn = async (hint) => { const email = hint || window.__cloudAccount; return { email, token: `ya29.${email}` }; }; window.__cloudAccount = 'stranger@example.com'; });
+    await page.locator('#owner-sign-in').click();
+    await page.locator('#start-setup').click();
+    await page.getByText('stranger@example.com is not an owner of yourcontentcreator-f7ef5').waitFor({ timeout: 30000 });
+    check('set it up refuses a sign-in that does not own the project', fakes.calls.filter((c) => c.path.endsWith('/jobs/kit-runner:run')).length === jobsBefore);
+    await page.evaluate(() => { window.__cloudAccount = 'owner@example.com'; });
+    await page.locator('#owner-sign-in').click();
+    await page.locator('#start-setup').click();
+    await page.getByText('Also sign in as the vault owner, dagan.gilat@gmail.com.').first().waitFor({ timeout: 30000 });
+    check('set it up asks for the vault owner when the project owner is another account', await page.locator('#vault-sign-in').count() === 1 && await page.locator('#start-setup').isDisabled());
+    await page.locator('#vault-sign-in').click();
+    await page.locator('#start-setup').click();
+    await page.locator('#setup-progress').waitFor({ timeout: 30000 });
+    const ob = fakes.calls.filter((c) => c.path.endsWith('/jobs/kit-runner:run')).pop();
+    const obo = ob && ob.body.overrides.containerOverrides[0];
+    const obEnv = obo ? Object.fromEntries(obo.env.map((e) => [e.name, e.value])) : {};
+    check('set it up starts the runner with the pull request settings and a one-time sign-in document', obo && obo.args.length === 0 && /^onboard\/\w+$/.test(obEnv.ONBOARD_DOC || '')
+      && Buffer.from(obEnv.BACKUP_ENV_B64 || '', 'base64').toString().includes('PROJECT_ID=yourcontentcreator-f7ef5') && obEnv.KIT_REF === 'v1.1', JSON.stringify(obEnv));
+    check('no sign-in token goes to the runner job itself', !JSON.stringify(ob.body).includes('ya29'));
+    const obDoc = await (await fetch(`http://127.0.0.1:8086/v1/projects/demo-yba/databases/(default)/documents/${obEnv.ONBOARD_DOC}`, { headers: { authorization: 'Bearer owner' } })).json();
+    const f = (k) => obDoc.fields && obDoc.fields[k] && obDoc.fields[k].stringValue;
+    check('the sign-in document holds both sign-ins for the runner', f('ownerToken') === 'ya29.owner@example.com' && f('vaultToken') === 'ya29.dagan.gilat@gmail.com' && f('repo') === 'dagangilat/your-content-creator' && f('branch') === 'main');
+    const obDenied = await page.evaluate(async (path) => {
+      const r = await fetch(`http://127.0.0.1:8086/v1/projects/demo-yba/databases/(default)/documents/${path}`, { headers: { authorization: `Bearer ${await window.__idToken()}` } });
+      return r.status;
+    }, obEnv.ONBOARD_DOC).catch(() => 0);
+    check('the browser cannot read the sign-in document', obDenied === 403, String(obDenied));
+    await fetch(`http://127.0.0.1:8086/v1/projects/demo-yba/databases/(default)/documents/${obEnv.LOG_DOC}?updateMask.fieldPaths=status&updateMask.fieldPaths=detail`, {
+      method: 'PATCH', headers: { authorization: 'Bearer owner', 'content-type': 'application/json' },
+      body: JSON.stringify({ fields: { status: { stringValue: 'succeeded' }, detail: { stringValue: 'SET UP: yourcontentcreator-f7ef5. Merge the pull request so the nightly backup runs.' } } }),
+    });
+    await page.locator('#setup-progress').getByText('set up', { exact: true }).waitFor({ timeout: 30000 });
+    check('set it up shows the runner\'s result live', await page.locator('.log-detail').getByText(/SET UP: yourcontentcreator-f7ef5/).count() === 1);
     await page.screenshot({ path: `${SHOTS}/7-protect.png`, fullPage: true });
 
     await page.goto('http://127.0.0.1:5055/settings');

@@ -40,6 +40,9 @@ def files_under(p):
 def gcloud(args):
     args = [a for a in args if not a.startswith("--account=")]
     log("gcloud " + " ".join(args))
+    if os.environ.get("CLOUDSDK_AUTH_ACCESS_TOKEN_FILE"):
+        with open(ROOT.parent / "tokenfile.log", "a") as f:
+            f.write(" ".join(args) + "\n")
     flags = [a for a in args if a.startswith("--")]
     pos = [a for a in args if not a.startswith("-")]
     head = " ".join(pos[:3])
@@ -179,6 +182,18 @@ def gcloud(args):
         return 0
     if pos[:3] == ["firestore", "databases", "list"]:
         return 0
+    if pos[:2] == ["iam", "workload-identity-pools"]:
+        state = ROOT.parent / "wif"
+        state.mkdir(exist_ok=True)
+        name = ("provider-" + pos[4]) if pos[2] == "providers" else ("pool-" + pos[3])
+        verb = pos[3] if pos[2] == "providers" else pos[2]
+        if verb == "describe":
+            return 0 if (state / name).exists() else 1
+        if verb.startswith("create"):
+            (state / name).touch()
+        return 0
+    if pos[:3] == ["iam", "service-accounts", "describe"] and os.environ.get("FAKE_NO_CI_SA"):
+        return 1
     if pos[:2] == ["iam", "service-accounts"]:
         print("github-deploy@demo-app.iam.gserviceaccount.com")
         return 0

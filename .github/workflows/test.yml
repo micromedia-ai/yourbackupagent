@@ -36,7 +36,7 @@ jobs:
           distribution: temurin
           java-version: 21
       - name: shellcheck
-        run: shellcheck -S warning setup.sh runner/entry.sh runner/test.sh
+        run: shellcheck -S warning setup.sh runner/entry.sh runner/test.sh runner/onboard.sh runner/onboard_test.sh
       - name: Install
         run: npm ci && (cd functions && npm ci)
       - name: Typecheck and build
@@ -44,7 +44,7 @@ jobs:
       - name: Unit tests
         run: npm test
       - name: Runner entry test
-        run: runner/test.sh
+        run: runner/test.sh && runner/onboard_test.sh
       - name: End-to-end (emulators, fake GitHub, real browser)
         run: |
           npm install --no-save playwright@1 firebase-tools@14

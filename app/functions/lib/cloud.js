@@ -94,3 +94,30 @@ export async function runJob({ project, region, job, args, env }) {
 export function jobRunning(execution) {
   return api('GET', `https://run.googleapis.com/v2/${execution}`).then((e) => !e.completionTime).catch(() => false);
 }
+
+// ---- a person's own short-lived Google sign-in ("Set it up here") -----------
+// Only checked here (who it is, that it owns the project); the kit runner
+// does the work with it. FAKE_GOOGLE_API serves these in the offline test.
+async function asUser(token, method, url, body) {
+  const target = process.env.FAKE_GOOGLE_API ? url.replace(/^https:\/\/[^/]+/, process.env.FAKE_GOOGLE_API) : url;
+  const res = await fetch(target, {
+    method, headers: { authorization: `Bearer ${token}`, ...(body ? { 'content-type': 'application/json' } : {}) },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw Object.assign(new Error((data.error && (data.error.message || data.error_description || data.error)) || String(res.status)), { status: res.status });
+  return data;
+}
+
+// tokenInfo(token) -> { email, scopes, expiresIn } of a Google access token.
+export async function tokenInfo(token) {
+  const t = await asUser(token, 'GET', `https://oauth2.googleapis.com/tokeninfo?access_token=${encodeURIComponent(token)}`);
+  return { email: String(t.email || '').toLowerCase(), scopes: String(t.scope || '').split(' '), expiresIn: Number(t.expires_in || 0) };
+}
+
+// ownsProject(token, project): may that sign-in change the project's IAM policy?
+export async function ownsProject(token, project) {
+  const r = await asUser(token, 'POST', `https://cloudresourcemanager.googleapis.com/v1/projects/${project}:testIamPermissions`,
+    { permissions: ['resourcemanager.projects.setIamPolicy'] }).catch(() => ({}));
+  return (r.permissions || []).includes('resourcemanager.projects.setIamPolicy');
+}

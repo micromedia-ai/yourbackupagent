@@ -33,6 +33,7 @@ export function startFakes(port = 4999) {
       'templates/backup-kit-wrapper.sh': tpl('templates/backup-kit-wrapper.sh'),
       'templates/backup.env.example': tpl('templates/backup.env.example'),
       'templates/backup.yml': tpl('templates/backup.yml'),
+      'app/runner/onboard.sh': tpl('app/runner/onboard.sh'),
     },
   };
   let labels = { 'drill-of': 'other-app', 'drill-data': 'passed' };
@@ -59,7 +60,11 @@ export function startFakes(port = 4999) {
     if ((m = p.match(/^\/repos\/([^/]+\/[^/]+)$/))) return send(200, { default_branch: 'main', full_name: m[1] });
     if (p.match(/\/git\/ref\/heads\//)) return send(200, { object: { sha: 'base' } });
     if (p.match(/\/git\/commits\/base$/)) return send(200, { tree: { sha: 'tree0' } });
-    if (p.match(/\/git\/trees$/)) return send(201, { sha: 'tree1' });
+    if ((m = p.match(/^\/repos\/([^/]+\/[^/]+)\/git\/trees$/))) {
+      // The pull request's files are readable afterwards (any ref).
+      for (const f of json.tree) files[m[1]][f.path] = f.content;
+      return send(201, { sha: 'tree1' });
+    }
     if (p.match(/\/git\/commits$/)) return send(201, { sha: 'c1' });
     if (p.match(/\/git\/refs$/)) return send(201, {});
     if (p.match(/\/pulls$/) && req.method === 'GET') return send(200, []);
@@ -68,6 +73,18 @@ export function startFakes(port = 4999) {
     if (p === '/emails' && req.method === 'POST') { emails.push({ ...json, auth: req.headers.authorization }); return send(200, { id: `em_${emails.length}` }); }
     // Google
     if (p === '/v3/projects/demo-drill') return send(200, { labels });
+    // A browser sign-in "ya29.<email>" (ya29.noscope: without Google Cloud access);
+    // owners of every project are the accounts starting with owner@ or dagan.gilat@.
+    if (p === '/tokeninfo') {
+      const t = url.searchParams.get('access_token') || '';
+      if (!t.startsWith('ya29.')) return send(400, { error_description: 'Invalid Value' });
+      const email = t.slice(5);
+      return send(200, { email, scope: email === 'noscope' ? 'openid email' : 'openid email https://www.googleapis.com/auth/cloud-platform', expires_in: '3500' });
+    }
+    if (p.match(/^\/v1\/projects\/[^/]+:testIamPermissions$/)) {
+      const email = String(req.headers.authorization || '').replace(/^Bearer ya29\./, '');
+      return send(200, /^(owner|dagan\.gilat)@/.test(email) ? { permissions: json.permissions } : {});
+    }
     if (p.match(/\/jobs\/kit-runner:run$/)) return send(200, { name: 'op1', metadata: { name: 'projects/a/locations/us-central1/jobs/kit-runner/executions/exec-1' } });
     return send(404, { message: `fake: no route ${req.method} ${p}` });
   });

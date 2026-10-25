@@ -98,6 +98,9 @@ label.radio { flex-direction: row; } .row label { flex-direction: row; align-ite
 .code .btn { position: absolute; top: 6px; right: 6px; }
 .steps { margin: 0; padding-left: 1.2em; display: flex; flex-direction: column; gap: 10px; }
 .steps li { display: flex; flex-direction: column; gap: 4px; }
+.log-detail { white-space: pre-wrap; word-break: break-word; max-height: 22rem; overflow: auto; background: var(--panel-2, rgba(127,127,127,.08)); padding: .6rem .75rem; border-radius: 8px; margin: 0; }
+details.panel > summary { cursor: pointer; }
+details.panel[open] > summary { margin-bottom: .5rem; }
 .repos { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .only-phone { display: none; }
 .signin h1 { font-size: 2rem; }

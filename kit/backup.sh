@@ -51,6 +51,15 @@ DRILL_WORKFLOW="${DRILL_WORKFLOW:-rebuild-drill.yml}"
 # The manager app's drill runner owns the shared drill project for good; wipes keep it.
 DRILL_RUNNER_SA="${DRILL_RUNNER_SA:-kit-runner@yourbackupagent-app.iam.gserviceaccount.com}"
 RUN_TIMEOUT_MIN="${RUN_TIMEOUT_MIN:-60}"
+# A short-lived Google sign-in from a browser (the manager app's "Set it up
+# here") instead of a gcloud login: files holding the access token of a project
+# owner and, when it is another account, of the vault owner.
+ACCESS_TOKEN_FILE="${ACCESS_TOKEN_FILE:-}"
+ACCESS_EMAIL="${ACCESS_EMAIL:-}"
+VAULT_ACCESS_TOKEN_FILE="${VAULT_ACCESS_TOKEN_FILE:-}"
+# github-access: the Workload Identity pool GitHub Actions signs in through.
+WIF_POOL="${WIF_POOL:-yourbackupagent}"
+WIF_BRANCH="${WIF_BRANCH:-main}"
 RETRIES="${RETRIES:-4}"
 
 usage() {
@@ -76,6 +85,10 @@ Every day (GitHub Actions runs these; you can too)
                     $KEEP_MIN_SETS good sets are left
 
 Once per project (as a project owner)
+  github-access     Let the Backup workflow in $REPO (branch $WIF_BRANCH only) sign in
+                    to Google as the backup service account without a stored key
+                    (Workload Identity Federation). Creates the service account if
+                    CI_SA is empty. Prints CI_SA= and WIF_PROVIDER= for the workflow.
   setup             Create gs://$BACKUP_BUCKET and give the
                     GitHub deploy service account the roles the daily backup needs
   protect           Firestore point-in-time recovery + delete protection, a daily
@@ -152,7 +165,7 @@ while [ $# -gt 0 ]; do
     --from) shift; FROM="${1:-}"; [ -n "$FROM" ] || die "--from needs offsite, archive or gs://BUCKET/PATH" ;;
     --to) shift; TO_PROJECT="${1:-}" ;;
     --retries) shift; RETRIES="${1:-}"; [[ "$RETRIES" =~ ^[1-9][0-9]?$ ]] || die "--retries needs a number from 1 to 99" ;;
-    status|setup|protect|offsite|vault-secrets|run|check|drill|rebuild|cleanup|restore|archive|retire|prune|delete)
+    status|github-access|setup|protect|offsite|vault-secrets|run|check|drill|rebuild|cleanup|restore|archive|retire|prune|delete)
       [ -z "$CMD" ] || die "one command at a time (got $CMD and $1)"
       CMD="$1" ;;
     *) usage >&2; die "unknown argument: $1" ;;
@@ -214,13 +227,16 @@ trap 'rm -rf "$WORKDIR"' EXIT
 # Every gcloud/API call goes through one of two identities: the logged-in
 # account (production owner, or the CI service account), or the vault owner.
 GV=(gcloud)
+ME=""
 TOKEN=""
 VTOKEN=""
 token() {
+  if [ -z "$TOKEN" ] && [ -n "$ACCESS_TOKEN_FILE" ]; then TOKEN="$(cat "$ACCESS_TOKEN_FILE")"; fi
   if [ -z "$TOKEN" ]; then TOKEN="$(gcloud auth print-access-token 2>/dev/null)" || die "gcloud is not logged in. Run: gcloud auth login"; fi
   printf '%s' "$TOKEN"
 }
 vtoken() {
+  if [ -z "$VTOKEN" ] && [ -n "$VAULT_ACCESS_TOKEN_FILE" ]; then VTOKEN="$(cat "$VAULT_ACCESS_TOKEN_FILE")"; fi
   if [ -z "$VTOKEN" ]; then
     VTOKEN="$(gcloud auth print-access-token "$VAULT_ACCOUNT" 2>/dev/null)" \
       || die "$VAULT_ACCOUNT is not logged in to gcloud. Run: gcloud auth login $VAULT_ACCOUNT  (then switch back: gcloud config set account <you>)"
@@ -387,9 +403,18 @@ preflight() {
   need_tool curl "comes with macOS; Linux: sudo apt-get install curl"
   check_tools
   local who
-  who="$(gcloud config get-value account 2>/dev/null || true)"
+  if [ -n "$ACCESS_TOKEN_FILE" ]; then
+    [ -s "$ACCESS_TOKEN_FILE" ] || die "ACCESS_TOKEN_FILE $ACCESS_TOKEN_FILE is empty"
+    # Every plain gcloud call then acts with that sign-in.
+    export CLOUDSDK_AUTH_ACCESS_TOKEN_FILE="$ACCESS_TOKEN_FILE"
+    who="${ACCESS_EMAIL:-browser sign-in}"
+  else
+    who="$(gcloud config get-value account 2>/dev/null || true)"
+  fi
   [ -n "$who" ] || die "gcloud is not logged in. Run: gcloud auth login"
-  if [ -n "$VAULT_ACCOUNT" ]; then GV=(gcloud --account="$VAULT_ACCOUNT"); fi
+  ME="$who"
+  if [ -n "$VAULT_ACCESS_TOKEN_FILE" ]; then GV=(gcloud --access-token-file="$VAULT_ACCESS_TOKEN_FILE")
+  elif [ -n "$VAULT_ACCOUNT" ]; then GV=(gcloud --account="$VAULT_ACCOUNT"); fi
   if [ "$AS_VAULT" = "1" ]; then
     say "  Account: $VAULT_ACCOUNT (vault owner; production is not used)"
     vtoken >/dev/null
@@ -469,6 +494,51 @@ cmd_setup() {
   say "  Done. New permissions take a few minutes to apply. Next: backup.sh protect, backup.sh offsite."
 }
 
+# ---- github-access ----------------------------------------------------------
+# Workload Identity Federation: GitHub's own short-lived OIDC token for a run of
+# $REPO on $WIF_BRANCH is exchanged for the backup service account's access.
+# Nothing to leak: there is no key, and runs of other repositories or branches
+# (pull requests included) are refused by the provider's condition.
+cmd_github_access() {
+  [[ "$REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || die "REPO in $ENV_FILE must be owner/name"
+  local sa="$CI_SA" num provider member cond
+  [ -n "$sa" ] || sa="yourbackupagent-ci@$PROJECT_ID.iam.gserviceaccount.com"
+  info "GitHub Actions sign-in for $REPO ($WIF_BRANCH) as $sa, without a key"
+  confirm "Create the Workload Identity pool $WIF_POOL in $PROJECT_ID (and $sa if missing)?" || die "stopped"
+  rrun gcloud services enable iam.googleapis.com iamcredentials.googleapis.com sts.googleapis.com --project "$PROJECT_ID"
+  if gcloud iam service-accounts describe "$sa" --project "$PROJECT_ID" >/dev/null 2>&1; then
+    say "  $sa exists"
+  else
+    case "$sa" in "yourbackupagent-ci@$PROJECT_ID.iam.gserviceaccount.com") ;; *) die "$sa (CI_SA) does not exist in $PROJECT_ID" ;; esac
+    rrun gcloud iam service-accounts create yourbackupagent-ci --project "$PROJECT_ID" \
+      --display-name="YourBackupAgent backups (GitHub Actions)" --format=none
+  fi
+  num="$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')" || die "cannot read the project number of $PROJECT_ID"
+  if gcloud iam workload-identity-pools describe "$WIF_POOL" --location=global --project "$PROJECT_ID" >/dev/null 2>&1; then
+    say "  pool $WIF_POOL exists"
+  else
+    rrun gcloud iam workload-identity-pools create "$WIF_POOL" --location=global --project "$PROJECT_ID" \
+      --display-name="YourBackupAgent (GitHub)" --format=none
+  fi
+  cond="assertion.repository=='$REPO' && assertion.ref=='refs/heads/$WIF_BRANCH'"
+  if gcloud iam workload-identity-pools providers describe github --workload-identity-pool="$WIF_POOL" --location=global --project "$PROJECT_ID" >/dev/null 2>&1; then
+    rrun gcloud iam workload-identity-pools providers update-oidc github --workload-identity-pool="$WIF_POOL" --location=global \
+      --project "$PROJECT_ID" --attribute-condition="$cond" --format=none
+  else
+    rrun gcloud iam workload-identity-pools providers create-oidc github --workload-identity-pool="$WIF_POOL" --location=global \
+      --project "$PROJECT_ID" --issuer-uri=https://token.actions.githubusercontent.com \
+      --attribute-mapping=google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.ref=assertion.ref \
+      --attribute-condition="$cond" --format=none
+  fi
+  member="principalSet://iam.googleapis.com/projects/$num/locations/global/workloadIdentityPools/$WIF_POOL/attribute.repository/$REPO"
+  rrun gcloud iam service-accounts add-iam-policy-binding "$sa" --project "$PROJECT_ID" \
+    --role=roles/iam.workloadIdentityUser --member="$member" --condition=None --quiet --format=none
+  provider="projects/$num/locations/global/workloadIdentityPools/$WIF_POOL/providers/github"
+  say "  The Backup workflow signs in with:"
+  say "CI_SA=$sa"
+  say "WIF_PROVIDER=$provider"
+}
+
 # ---- protect ----------------------------------------------------------------
 add_lien() {
   local p="$1" reason="$2" g=("${@:3}")
@@ -544,10 +614,8 @@ vault_bucket() {
 }
 
 check_vault_login() {
-  local me
-  me="$(gcloud config get-value account 2>/dev/null || true)"
   # Allowed, but the vault is then only as safe as that one account.
-  [ "$VAULT_ACCOUNT" != "$me" ] || [ "$AS_VAULT" = "1" ] \
+  [ "$VAULT_ACCOUNT" != "$ME" ] || [ "$AS_VAULT" = "1" ] \
     || warn "$VAULT_ACCOUNT owns both $PROJECT_ID and the vault: losing that account loses both"
   vtoken >/dev/null
 }
@@ -1088,7 +1156,7 @@ cmd_status() {
     | jq -r '"  gs://\(.name)  \(.location)  soft delete \((.soft_delete_policy.retentionDurationSeconds // "0") | tonumber / 86400 | floor) days  lifecycle: \([.lifecycle_config.rule[]? | "\(.action.type) \(.condition.matches_prefix // [] | join(",")) after \(.condition.age) days"] | join("; "))"' \
     || warn "cannot read gs://$BACKUP_BUCKET"
   if [ -n "$OFFSITE_BUCKET" ]; then
-    if [ -n "$VAULT_ACCOUNT" ] && gcloud auth print-access-token "$VAULT_ACCOUNT" >/dev/null 2>&1; then
+    if [ -n "$VAULT_ACCESS_TOKEN_FILE" ] || { [ -n "$VAULT_ACCOUNT" ] && gcloud auth print-access-token "$VAULT_ACCOUNT" >/dev/null 2>&1; }; then
       id="$(newest_good_run "gs://$OFFSITE_BUCKET/runs" vault || true)"
       say "  gs://$OFFSITE_BUCKET (off-site, $VAULT_ACCOUNT): $(run_ids_in "gs://$OFFSITE_BUCKET/runs" vault | wc -l | tr -d ' ') runs, newest complete ${id:-none}"
     else
@@ -1737,5 +1805,6 @@ if [ "${BACKUP_KIT_FUNCTIONS_ONLY:-}" = "1" ]; then return 0 2>/dev/null || exit
 preflight
 case "$CMD" in
   vault-secrets) cmd_vault_secrets ;;
+  github-access) cmd_github_access ;;
   *) "cmd_$CMD" ;;
 esac

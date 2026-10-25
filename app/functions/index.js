@@ -14,7 +14,7 @@ import { onDocumentWritten } from 'firebase-functions/v2/firestore';
 import { defineSecret, defineString } from 'firebase-functions/params';
 import { createHash, randomBytes } from 'node:crypto';
 import { github } from './lib/github.js';
-import { listSets, deleteSet, drillLabels, runJob, storeBytes } from './lib/cloud.js';
+import { listSets, deleteSet, drillLabels, runJob, storeBytes, tokenInfo, ownsProject } from './lib/cloud.js';
 import { parseEnv, projectSettings, setEnvValue } from './lib/env.js';
 import { canDelete, health, prunePlan, RUN_ID } from './lib/sets.js';
 import { lockBlocks, endsLock, LOCK_HOURS } from './lib/drilllock.js';
@@ -211,6 +211,9 @@ export const nightly = onSchedule({ ...opts, schedule: '30 5 * * *', timeZone: '
   const bad = results.filter((r) => r.error || (r.health && r.health.level === 'bad'));
   if (bad.length) console.error(`YourBackupAgent: ${bad.length} project(s) need attention: ${bad.map((b) => b.projectId || b.repo).join(', ')}`);
   await checkAlerts('schedule');
+  // A setup whose runner never started leaves its (long expired) sign-in behind.
+  const stale = await db.collection('onboard').where('at', '<', new Date(Date.now() - 3600000)).get();
+  await Promise.all(stale.docs.map((d) => d.ref.delete()));
 });
 
 // ---- email alerts ------------------------------------------------------------
@@ -515,6 +518,62 @@ export const protect = onCall(opts, async (req) => {
     await logEnd(ref, 'succeeded', `pull request #${pr.number}`, { link: pr.html_url, project: projectId });
     return { pr: pr.html_url, number: pr.number, projectId, secret, commands: setupCommands(repo) };
   } catch (e) {
+    await logEnd(ref, 'failed', e.message);
+    throw new HttpsError('internal', e.message);
+  }
+});
+
+// "Set it up here" on the Protect page: the one-time setup of a repository's
+// project (what onboard.sh does on a Mac), done by the kit runner with the
+// project owner's short-lived Google sign-in from the browser, plus the vault
+// owner's when that is another account. Checked here, kept in onboard/<id>
+// (server only, read once and deleted by the runner), expire within the hour.
+const PROTECT_BRANCH = 'yourbackupagent/protect';
+const CLOUD_SCOPE = 'https://www.googleapis.com/auth/cloud-platform';
+export const onboard = onCall(opts, async (req) => {
+  const by = await requireUser(req);
+  const { repo, ownerToken, vaultToken } = req.data || {};
+  if (!/^[\w.-]+\/[\w.-]+$/.test(repo || '')) throw new HttpsError('invalid-argument', 'repo must be owner/name');
+  if (typeof ownerToken !== 'string' || !ownerToken || (vaultToken !== undefined && typeof vaultToken !== 'string')) throw new HttpsError('invalid-argument', 'sign in as the project owner first');
+  const gh = github(GITHUB_TOKEN.value());
+  const open = await gh.call('GET', `/repos/${repo}/pulls?head=${repo.split('/')[0]}:${encodeURIComponent(PROTECT_BRANCH)}&state=open`);
+  const branch = open.length ? PROTECT_BRANCH : (await gh.repo(repo)).default_branch;
+  const envFile = await gh.fileText(repo, 'backup-kit/backup.env', branch);
+  if (!envFile) throw new HttpsError('failed-precondition', `${repo} has no backup-kit/backup.env yet: open the pull request first`);
+  const env = parseEnv(envFile.text);
+  const p = projectSettings(env);
+  const vaultAccount = String(env.VAULT_ACCOUNT || '').toLowerCase();
+  const check = async (token, who) => {
+    const t = await tokenInfo(token).catch(() => null);
+    if (!t || !t.email) throw new HttpsError('unauthenticated', `The ${who} sign-in is not valid any more. Sign in again.`);
+    if (!t.scopes.includes(CLOUD_SCOPE)) throw new HttpsError('permission-denied', `The ${who} sign-in has no Google Cloud access. Sign in again and allow it.`);
+    if (t.expiresIn < 15 * 60) throw new HttpsError('failed-precondition', `The ${who} sign-in expires in under 15 minutes. Sign in again.`);
+    return t;
+  };
+  const owner = await check(ownerToken, 'project owner');
+  if (!(await ownsProject(ownerToken, p.projectId))) throw new HttpsError('permission-denied', `${owner.email} is not an owner of ${p.projectId}. Sign in as its owner.`);
+  let vault = null;
+  if (vaultAccount && owner.email !== vaultAccount) {
+    if (!vaultToken) throw new HttpsError('failed-precondition', `Also sign in as the vault owner, ${vaultAccount}.`, { needVault: vaultAccount });
+    vault = await check(vaultToken, 'vault owner');
+    if (vault.email !== vaultAccount) throw new HttpsError('permission-denied', `The vault owner is ${vaultAccount}, not ${vault.email}.`, { needVault: vaultAccount });
+  }
+  const tags = await gh.call('GET', `/repos/${KIT_REPO}/tags?per_page=50`);
+  const kitRef = pickNewestTag(tags.map((t) => t.name)) || 'v1';
+  if (!(await gh.fileText(KIT_REPO, 'app/runner/onboard.sh', kitRef))) throw new HttpsError('failed-precondition', `Kit ${kitRef} cannot set projects up from the app yet (needs a newer kit release).`);
+  const ref = await logStart(by, 'set up project', { project: p.projectId, repo, detail: `as ${owner.email}${vault ? ` and ${vault.email}` : ''}, kit ${kitRef}` });
+  const doc = db.collection('onboard').doc(ref.id);
+  try {
+    await doc.set({ ownerToken, vaultToken: vault ? vaultToken : '', ownerEmail: owner.email, repo, branch, by, at: FieldValue.serverTimestamp() });
+    const execution = await runJob({
+      project: process.env.GCLOUD_PROJECT, region: REGION, job: JOB, args: [],
+      env: { BACKUP_ENV_B64: Buffer.from(envFile.text).toString('base64'), LOG_DOC: ref.path, KIT_REF: kitRef, ONBOARD_DOC: doc.path },
+    });
+    await ref.update({ status: 'running', execution: execution || null });
+    if (!(await settings()).repos.includes(repo)) await db.doc('config/settings').set({ repos: FieldValue.arrayUnion(repo) }, { merge: true });
+    return { ok: true, log: ref.id, projectId: p.projectId, owner: owner.email, branch };
+  } catch (e) {
+    await doc.delete().catch(() => {});
     await logEnd(ref, 'failed', e.message);
     throw new HttpsError('internal', e.message);
   }

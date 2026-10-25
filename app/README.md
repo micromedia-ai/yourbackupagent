@@ -45,8 +45,10 @@ app/setup.sh deploy                      # web app, API, rules
 cd ~/foundation-next && ~/yourbackupagent/app/setup.sh grant foundation-next-app
 ```
 
-New projects after that: Protect a repository in the app, then
-`./onboard.sh owner/repo` from this checkout (it runs `grant` itself).
+New projects after that: Protect a repository in the app, then **Set it up
+here** on the same page (a Google sign-in as the project's owner; the runner
+does the rest, `grant` included). Or `./onboard.sh owner/repo` from this
+checkout on a Mac.
 
 ## Invite only, and email alerts
 

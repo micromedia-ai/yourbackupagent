@@ -1,6 +1,6 @@
 // Firebase for the manager app. The config comes from Firebase Hosting's
 // reserved /__/firebase/init.json, so nothing project-specific is in the code.
-import { initializeApp, type FirebaseApp } from 'firebase/app';
+import { getApps, initializeApp, type FirebaseApp } from 'firebase/app';
 import { connectAuthEmulator, getAuth, GoogleAuthProvider, signInWithCredential, signInWithPopup, reauthenticateWithPopup, signOut, type User } from 'firebase/auth';
 import { connectFirestoreEmulator, getFirestore } from 'firebase/firestore';
 import { connectFunctionsEmulator, getFunctions, httpsCallable } from 'firebase/functions';
@@ -23,6 +23,7 @@ export async function initFirebase() {
     connectFunctionsEmulator(getFunctions(app, 'us-central1'), '127.0.0.1', 5001);
     // The test browser cannot load Google's popup script: sign in with an
     // unsigned emulator token instead.
+    (window as any).__idToken = () => getAuth(app!).currentUser?.getIdToken();
     (window as any).__testSignIn = (email: string) =>
       signInWithCredential(getAuth(app!), GoogleAuthProvider.credential(JSON.stringify({ sub: email, email, email_verified: true })));
   }
@@ -54,4 +55,22 @@ export async function storageToken(user: User): Promise<string> {
   const token = GoogleAuthProvider.credentialFromResult(r)?.accessToken;
   if (!token) throw new Error('Google did not hand over a storage token.');
   return token;
+}
+
+// "Set it up here": a project owner's (or the vault owner's) short-lived Google
+// Cloud sign-in, handed to the app's runner for the one-time setup. A second
+// Firebase app instance keeps your own sign-in to this app as it is.
+export async function cloudSignIn(hint = ''): Promise<{ email: string; token: string }> {
+  if (EMULATORS) return (window as any).__testCloudSignIn(hint);
+  const second = getApps().find((a) => a.name === 'cloud') || initializeApp(app!.options, 'cloud');
+  const a = getAuth(second);
+  const p = new GoogleAuthProvider();
+  p.addScope('https://www.googleapis.com/auth/cloud-platform');
+  p.setCustomParameters({ prompt: 'select_account', ...(hint ? { login_hint: hint } : {}) });
+  const r = await signInWithPopup(a, p);
+  const token = GoogleAuthProvider.credentialFromResult(r)?.accessToken;
+  const email = (r.user.email || '').toLowerCase();
+  await signOut(a);
+  if (!token) throw new Error('Google did not hand over a Google Cloud sign-in.');
+  return { email, token };
 }

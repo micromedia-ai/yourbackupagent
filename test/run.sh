@@ -54,6 +54,31 @@ BACKUP_ENV=/nonexistent "$KIT/backup.sh" status >"$T/out" 2>&1
 expect "a missing settings file is refused" '[ $? -ne 0 ] && grep -q "no settings file" "$T/out"' "$T/out"
 bk --help;                expect "help prints the commands" 'grep -q "rebuild \[--from" "$T/out"' "$T/out"
 
+# --- github-access: Workload Identity, no key ------------------------------------
+: >"$T/calls.log"
+bk github-access --yes;   expect "github-access succeeds" '[ $? -eq 0 ]' "$T/out"
+expect "github-access makes the pool and a GitHub provider for this repository's main branch only" 'grep -q "workload-identity-pools create yourbackupagent" "$T/calls.log" && grep "providers create-oidc github" "$T/calls.log" | grep -q "assertion.repository==.example/demo. && assertion.ref==.refs/heads/main."' "$T/calls.log"
+expect "github-access lets only this repository use the service account" 'grep -q "service-accounts add-iam-policy-binding github-deploy@demo-app.iam.gserviceaccount.com .*roles/iam.workloadIdentityUser .*principalSet://iam.googleapis.com/projects/123456/locations/global/workloadIdentityPools/yourbackupagent/attribute.repository/example/demo" "$T/calls.log"' "$T/calls.log"
+expect "github-access prints CI_SA and WIF_PROVIDER" 'grep -qx "CI_SA=github-deploy@demo-app.iam.gserviceaccount.com" "$T/out" && grep -qx "WIF_PROVIDER=projects/123456/locations/global/workloadIdentityPools/yourbackupagent/providers/github" "$T/out"' "$T/out"
+: >"$T/calls.log"
+bk github-access --yes
+expect "github-access again updates the provider instead of creating a second" '[ $? -eq 0 ] && ! grep -q "create-oidc\|pools create" "$T/calls.log" && grep -q "providers update-oidc github" "$T/calls.log"' "$T/calls.log"
+sed 's/^CI_SA=.*/CI_SA=/' "$BACKUP_ENV" >"$T/noci.env"
+: >"$T/calls.log"
+BACKUP_ENV="$T/noci.env" FAKE_NO_CI_SA=1 "$KIT/backup.sh" github-access --yes >"$T/out" 2>&1
+expect "github-access with an empty CI_SA creates yourbackupagent-ci" '[ $? -eq 0 ] && grep -q "service-accounts create yourbackupagent-ci --project demo-app" "$T/calls.log" && grep -qx "CI_SA=yourbackupagent-ci@demo-app.iam.gserviceaccount.com" "$T/out"' "$T/out"
+rm -rf "$T/wif"
+
+# --- a browser sign-in (token files) instead of a gcloud login --------------------
+printf 'tok-owner' >"$T/owner.tok"; printf 'tok-vault' >"$T/vault.tok"
+: >"$T/calls.log"; rm -f "$T/tokenfile.log"
+ACCESS_TOKEN_FILE="$T/owner.tok" ACCESS_EMAIL=someone@example.com VAULT_ACCESS_TOKEN_FILE="$T/vault.tok" "$KIT/backup.sh" offsite --yes >"$T/out" 2>&1
+expect "offsite with browser sign-ins: names the signed-in owner and acts as the vault sign-in" '[ $? -eq 0 ] && grep -q "Account: someone@example.com" "$T/out" && grep -q -- "--access-token-file=$T/vault.tok storage buckets add-iam-policy-binding gs://demo-vault-offsite" "$T/calls.log"' "$T/out"
+expect "plain gcloud calls use the owner sign-in" '[ -s "$T/tokenfile.log" ] && grep -q "projects describe demo-app" "$T/tokenfile.log"' "$T/out"
+printf '' >"$T/empty.tok"
+ACCESS_TOKEN_FILE="$T/empty.tok" "$KIT/backup.sh" status >"$T/out" 2>&1
+expect "an empty token file is refused" '[ $? -ne 0 ] && grep -q "is empty" "$T/out"' "$T/out"
+
 # --- dry run changes nothing ---------------------------------------------------
 : >"$T/calls.log"
 bk run --dry-run;         expect "dry-run run exits 0" '[ $? -eq 0 ]' "$T/out"

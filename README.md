@@ -89,15 +89,25 @@ start of every drill; GitHub gets owner access to it only during a drill.
 
 ## Adding the kit to a project
 
-The short way: in the manager app, **Protect a repository** (it opens the
-pull request), then on a Mac, from this checkout:
+The short way, without a terminal: in the manager app, **Protect a
+repository** (it opens the pull request), then **Set it up here**: sign in
+with Google as an owner of the project (and as `VAULT_ACCOUNT` when that is
+another account). The app's runner then does the one-time setup with that
+short-lived sign-in (`app/runner/onboard.sh`): `github-access` (GitHub signs
+in to Google through Workload Identity Federation, so no key is stored
+anywhere), commits `CI_SA` and the keyless sign-in to the pull request, then
+setup, protect, offsite, the app's access and the first backup. The sign-in is
+used once, never stored past that, and expires within the hour. Merge the pull
+request, then start a rebuild drill from the project page.
+
+The same on a Mac, from this checkout (it makes a JSON key instead):
 
 ```bash
 ./onboard.sh owner/repo        # login, GitHub key if missing, setup, protect, offsite,
                                # first backup, app access, rebuild drill, merge (asks first)
 ```
 
-It runs every step below in order and can run again. By hand:
+Either runs every step below in order and can run again. By hand:
 
 1. In the project repository: `mkdir backup-kit`, copy
    `templates/backup-kit-wrapper.sh` to `backup-kit/backup.sh` (executable),

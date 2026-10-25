@@ -123,6 +123,7 @@ expect "--replace takes it over" '[ $? -eq 0 ] && grep -q "DATA RESTORE PASSED" 
 # --- offsite on an existing vault bucket -------------------------------------------------------
 : >"$T/calls.log"
 bk offsite --yes;         expect "offsite accepts the vault's own existing bucket and grants add + read" '[ $? -eq 0 ] && grep -q "storage buckets describe gs://demo-vault-offsite --raw" "$T/calls.log" && grep -q "add-iam-policy-binding gs://demo-vault-offsite .*objectCreator" "$T/calls.log"' "$T/out"
+expect "offsite lets the drill project's Firestore read the vault bucket" 'grep -q "add-iam-policy-binding gs://demo-vault-offsite --member=serviceAccount:service-123456@gcp-sa-firestore.iam.gserviceaccount.com --role=roles/storage.legacyBucketReader" "$T/calls.log"' "$T/calls.log"
 
 # --- rebuild (data only) ---------------------------------------------------------------------
 : >"$T/calls.log"

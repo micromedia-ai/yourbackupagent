@@ -554,7 +554,7 @@ cmd_offsite() {
   [ -n "$OFFSITE_BUCKET" ] || die "OFFSITE_BUCKET is empty in $ENV_FILE"
   [ -n "$CI_SA" ] || die "CI_SA is empty in $ENV_FILE; run setup first"
   check_vault_login
-  local loc
+  local loc num role
   loc="$(multi_region_for "$(data_location)")"
   info "Off-site bucket gs://$OFFSITE_BUCKET ($loc) in $VAULT_PROJECT, owned by $VAULT_ACCOUNT"
   confirm "Set it up (keeps $OFFSITE_KEEP_DAYS days; GitHub may add and read files, never delete)?" || die "stopped"
@@ -567,6 +567,18 @@ cmd_offsite() {
     --member="serviceAccount:$CI_SA" --role=roles/storage.objectCreator --quiet --format=none
   rrun "${GV[@]}" storage buckets add-iam-policy-binding "gs://$OFFSITE_BUCKET" \
     --member="serviceAccount:$CI_SA" --role=roles/storage.objectViewer --quiet --format=none
+  # Rebuild drills import from this bucket as the drill project's Firestore
+  # service agent; grant it now, as the vault owner (a drill runner may not).
+  if [ -n "$DRILL_PROJECT" ]; then
+    if num="$("${GV[@]}" projects describe "$DRILL_PROJECT" --format='value(projectNumber)' 2>/dev/null)" && [ -n "$num" ]; then
+      for role in roles/storage.objectViewer roles/storage.legacyBucketReader; do
+        rrun "${GV[@]}" storage buckets add-iam-policy-binding "gs://$OFFSITE_BUCKET" \
+          --member="serviceAccount:service-$num@gcp-sa-firestore.iam.gserviceaccount.com" --role="$role" --quiet --format=none
+      done
+    else
+      warn "drill project $DRILL_PROJECT not found; the first rebuild grants its Firestore read access instead"
+    fi
+  fi
   add_lien "$VAULT_PROJECT" "YourBackupAgent vault: off-site backups and archives" "${GV[@]}"
   say "  The next backup run copies itself to gs://$OFFSITE_BUCKET (status shows Off-site ok)."
 }
@@ -1249,8 +1261,11 @@ restore_into() {
   agent="service-$num@gcp-sa-firestore.iam.gserviceaccount.com"
   run "${g[@]}" beta services identity create --service=firestore.googleapis.com --project "$target" --quiet >/dev/null 2>&1 || true
   b="$(printf '%s' "$src" | sed -E 's#^gs://([^/]+).*#\1#')"
+  # A runner that may only read the bucket cannot grant this; offsite grants
+  # it ahead for the drill project, so carry on (the import says if it is missing).
   for role in roles/storage.objectViewer roles/storage.legacyBucketReader; do
-    rrun "${g[@]}" storage buckets add-iam-policy-binding "gs://$b" --member="serviceAccount:$agent" --role="$role" --quiet --format=none
+    rrun "${g[@]}" storage buckets add-iam-policy-binding "gs://$b" --member="serviceAccount:$agent" --role="$role" --quiet --format=none \
+      || warn "could not give $target's Firestore read access to gs://$b (fine if it already has it)"
   done
 
   : >"$WORKDIR/compare"

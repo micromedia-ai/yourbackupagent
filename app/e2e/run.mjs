@@ -197,6 +197,7 @@ async function main() {
     await page.getByRole('button', { name: 'List my Firebase repositories' }).click();
     await page.locator('#repo-dagangilat\\/your-content-creator').check();
     check('protect lists Firebase repositories only', await page.getByText('dagangilat/notes').count() === 0 && await page.getByText('not protected').count() === 1);
+    check('protect lists a repo whose Firebase app is in app/', await page.locator('#repo-dagangilat\\/limorgilat\\.com').count() === 1 && await page.getByText('limorgilat-com', { exact: true }).count() === 1);
     await page.getByRole('button', { name: 'Open the pull request' }).click();
     await page.getByText('One-time setup for yourcontentcreator-f7ef5').waitFor({ timeout: 30000 });
     const tree = fakes.calls.find((c) => c.path === '/repos/dagangilat/your-content-creator/git/trees');

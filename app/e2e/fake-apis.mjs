@@ -27,6 +27,7 @@ export function startFakes(port = 4999) {
   const files = {
     'dagangilat/foundation-next': { 'backup-kit/backup.env': ENV, 'firebase.json': '{}', '.firebaserc': '{"projects":{"prod":"demo-fn"}}' },
     'dagangilat/your-content-creator': { 'firebase.json': '{}', '.firebaserc': '{"projects":{"default":"yourcontentcreator-f7ef5"}}' },
+    'dagangilat/limorgilat.com': { 'backup-kit/backup.env': 'PROJECT_ID=limorgilat-com\n', 'app/firebase.json': '{}', 'app/.firebaserc': '{"projects":{"default":"limorgilat-com"}}' },
     'dagangilat/notes': {},
     'dagangilat/yourbackupagent': {
       'templates/backup-kit-wrapper.sh': tpl('templates/backup-kit-wrapper.sh'),

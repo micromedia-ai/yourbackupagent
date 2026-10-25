@@ -11,7 +11,7 @@ set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 KIT="$(cd "$HERE/../kit" && pwd)"
 T="$(mktemp -d)"
-trap 'rm -rf "$T"' EXIT
+trap '[ -n "${KEEP_T:-}" ] || rm -rf "$T"' EXIT
 mkdir -p "$T/bin" "$T/gcs"
 for tool in gcloud curl; do
   printf '#!/bin/sh\nexec python3 "%s" "%s" "$@"\n' "$HERE/fake_cloud.py" "$tool" >"$T/bin/$tool"
@@ -188,6 +188,60 @@ FAKE_NO_FIRESTORE=1 BACKUP_ENV="$T/nofs.env" bk drill --here --yes
 expect "drill --here without Firestore checks files and users, makes no database" '[ $? -eq 0 ] && grep -q "DRILL PASSED" "$T/out" && ! grep -q "firestore databases" "$T/calls.log"' "$T/out"
 FAKE_NO_FIRESTORE=1 BACKUP_ENV="$T/nofs.env" bk status
 expect "status says the project has no Firestore" '[ $? -eq 0 ] && grep -q "Firestore: none in this project" "$T/out"' "$T/out"
+
+# --- changed-files-only storage (STORAGE_MODE=changed) ---------------------------------------
+{ grep -v -E '^(BACKUP_BUCKET|OFFSITE_BUCKET)=' "$T/backup.env"; printf 'BACKUP_BUCKET=ch-backups\nOFFSITE_BUCKET=ch-vault\nSTORAGE_MODE=changed\n'; } >"$T/ch.env"
+mkdir -p "$T/gcs/ch-backups" "$T/gcs/ch-vault"
+SB=demo-app.firebasestorage.app; SRC="$T/gcs/$SB"; CS="$T/gcs/ch-backups/files/$SB"
+chk() { BACKUP_ENV="$T/ch.env" bk "$@"; }
+sleep 1; chk run --yes
+# shellcheck disable=SC2034 # read inside the expect strings
+C1="$(ls "$T/gcs/ch-backups/runs" | sort | tail -n 1)"
+# shellcheck disable=SC2034 # read inside the expect strings
+CM1="$T/gcs/ch-backups/runs/$C1/manifest.json"
+expect "changed mode: the first set copies every file into the shared store" \
+  '[ $? -eq 0 ] && [ "$(jq -c ".storage[\"$SB\"] | [.mode, .objects, .copiedFiles]" "$CM1")" = "[\"changed\",2,2]" ] && [ -f "$CS/o/products/a.webp" ] && [ ! -d "$T/gcs/ch-backups/runs/$C1/storage/$SB" ]' "$T/out"
+expect "changed mode: the set has an index and the vault gets the store" \
+  '[ "$(jq ".files | length" "$T/gcs/ch-backups/runs/$C1/storage/$SB.index.json")" = 2 ] && [ -f "$T/gcs/ch-vault/files/$SB/o/products/b.webp" ] && [ -f "$T/gcs/ch-vault/runs/$C1/storage/$SB.index.json" ]' "$T/out"
+expect "changed mode: the log lists no file names" '! grep -q "products/" "$T/out"' "$T/out"
+sleep 1; echo img1-edited >"$SRC/products/a.webp"; echo img3 >"$SRC/products/c.webp"
+chk run --yes
+# shellcheck disable=SC2034 # read inside the expect strings
+C2="$(ls "$T/gcs/ch-backups/runs" | sort | tail -n 1)"
+# shellcheck disable=SC2034 # read inside the expect strings
+CM2="$T/gcs/ch-backups/runs/$C2/manifest.json"
+expect "changed mode: the next set copies only the new and the changed file" \
+  '[ $? -eq 0 ] && [ "$(jq -c ".storage[\"$SB\"] | [.objects, .copiedFiles]" "$CM2")" = "[3,2]" ] && [ "$(cat "$CS/o/products/a.webp")" = img1 ] && [ "$(cat "$CS"/v/*/products/a.webp)" = img1-edited ]' "$T/out"
+expect "changed mode: the older set still points at the first copy" \
+  '[ "$(jq -r ".files[] | select(.n == \"products/a.webp\") | .p" "$T/gcs/ch-backups/runs/$C1/storage/$SB.index.json")" = o/products/a.webp ]'
+chk drill --here --run "$C2" --yes
+expect "changed mode: drill --here finds every file of the set in the store" '[ $? -eq 0 ] && grep -q "DRILL PASSED" "$T/out"' "$T/out"
+# shellcheck disable=SC2034 # read inside the expect strings
+DB="$T/gcs/demo-drill.firebasestorage.app"
+chk rebuild --data-only --run "$C1" --yes --replace
+expect "changed mode: a rebuild of the first set restores its own versions, without later files" \
+  '[ $? -eq 0 ] && grep -q "DATA RESTORE PASSED" "$T/out" && [ "$(cat "$DB/products/a.webp")" = img1 ] && [ ! -f "$DB/products/c.webp" ]' "$T/out"
+chk rebuild --data-only --run "$C2" --yes --replace
+expect "changed mode: a rebuild of the second set has the edited file and the new one" \
+  '[ $? -eq 0 ] && grep -q "DATA RESTORE PASSED" "$T/out" && [ "$(cat "$DB/products/a.webp")" = img1-edited ] && [ -f "$DB/products/c.webp" ]' "$T/out"
+# Once no set refers to a store file, it goes (after 2 days, so a running backup is safe).
+rm "$SRC/products/b.webp"; sleep 1; chk run --yes
+# shellcheck disable=SC2034 # read inside the expect strings
+C3="$(ls "$T/gcs/ch-backups/runs" | sort | tail -n 1)"
+rm -rf "$T/gcs/ch-backups/runs/$C1" "$T/gcs/ch-backups/runs/$C2"
+mkdir -p "$CS/o/fresh" && echo new >"$CS/o/fresh/x.webp"
+python3 -c 'import os,sys,time
+for root,_,fs in os.walk(sys.argv[1]):
+    for f in fs:
+        p=os.path.join(root,f)
+        if "fresh" not in p: os.utime(p,(time.time()-3*86400,)*2)' "$CS"
+chk prune --yes
+expect "changed mode: prune deletes store files no set refers to, keeps the rest" \
+  '[ $? -eq 0 ] && [ ! -f "$CS/o/products/a.webp" ] && [ ! -f "$CS/o/products/b.webp" ] && [ -f "$CS/o/products/c.webp" ] && [ -f "$CS"/v/*/products/a.webp ] && [ -f "$CS/o/fresh/x.webp" ]' "$T/out"
+expect "changed mode: the newest set still restores after the cleanup" \
+  '[ "$(jq -r ".storage[\"$SB\"].objects" "$T/gcs/ch-backups/runs/$C3/manifest.json")" = 2 ] && chk drill --here --run "$C3" --yes && grep -q "DRILL PASSED" "$T/out"' "$T/out"
+printf 'STORAGE_MODE=some\n' >>"$T/ch.env"; chk status
+expect "a wrong STORAGE_MODE is refused" '[ $? -ne 0 ] && grep -q "STORAGE_MODE must be full or changed" "$T/out"' "$T/out"
 
 # --- the project wrapper ----------------------------------------------------------------------
 mkdir -p "$T/proj/backup-kit"

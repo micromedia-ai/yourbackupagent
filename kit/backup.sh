@@ -34,6 +34,7 @@ BACKUP_KEEP_DAYS="${BACKUP_KEEP_DAYS:-14}"
 KEEP_MIN_SETS="${KEEP_MIN_SETS:-7}"
 FIRESTORE_DATABASES="${FIRESTORE_DATABASES:-auto}"
 STORAGE_BUCKETS="${STORAGE_BUCKETS:-auto}"
+STORAGE_MODE="${STORAGE_MODE:-full}"
 RTDB="${RTDB:-auto}"
 REGIONS="${REGIONS:-us-central1}"
 MANAGED_KEEP_DAYS="${MANAGED_KEEP_DAYS:-14}"
@@ -59,6 +60,8 @@ Every day (GitHub Actions runs these; you can too)
                     Auth users with password hashes, Realtime Database, project
                     config. Writes gs://$BACKUP_BUCKET/runs/<id>/ and copies the run
                     to the off-site bucket gs://$OFFSITE_BUCKET.
+                    Storage mode: $STORAGE_MODE (changed = each set copies only new or
+                    changed files into a shared store, gs://$BACKUP_BUCKET/files/).
   check             Fail when the newest good backup is older than ${MAX_AGE_HOURS}h or a
                     step failed; warn about missing protection (read-only)
   status            Recent runs, counts, buckets, protection (read-only)
@@ -164,6 +167,7 @@ for v in BACKUP_KEEP_DAYS OFFSITE_KEEP_DAYS MAX_AGE_HOURS RUN_TIMEOUT_MIN; do
   # shellcheck disable=SC2154
   [[ "$x" =~ ^[1-9][0-9]{0,3}$ ]] || die "$v must be a whole number (got '$x')"
 done
+case "$STORAGE_MODE" in full|changed) ;; *) die "STORAGE_MODE must be full or changed (got '$STORAGE_MODE')" ;; esac
 [[ "$KEEP_MIN_SETS" =~ ^[1-9][0-9]{0,2}$ ]] || die "KEEP_MIN_SETS must be a whole number from 1 to 999 (got '$KEEP_MIN_SETS')"
 [ "$VAULT" = "0" ] || case "$CMD" in prune|delete) ;; *) die "--vault only goes with prune or delete" ;; esac
 [ "$VAULT" = "0" ] || [ -n "$OFFSITE_BUCKET" ] || die "--vault needs OFFSITE_BUCKET in $ENV_FILE"
@@ -629,12 +633,137 @@ step_firestore() {
 step_storage() {
   local dest="$1" b n
   for b in $(storage_buckets); do
+    # An archive is a set on its own, so it always holds full copies.
+    if [ "$STORAGE_MODE" = "changed" ] && [ "$TRIGGER" != "archive" ]; then
+      storage_changed "$dest" "$b" || return 1
+      continue
+    fi
     info "Storage gs://$b -> storage/$b"
     rqrun gcloud storage rsync -r "gs://$b" "$dest/storage/$b" --quiet || return 1
     n="$(object_count_as "$dest/storage/$b" gcloud)"
     mset --arg b "$b" --argjson n "${n:-0}" '.storage[$b] = {objects: $n}'
     say "  $n files"
   done
+}
+
+# ---- Storage, changed files only (STORAGE_MODE=changed) -----------------------
+# Files are kept once, in a shared store next to the sets:
+#   <bucket>/files/<storage bucket>/o/<name>         the first copy of a file
+#   <bucket>/files/<storage bucket>/v/<key>/<name>   a later, different content
+# (key = the file's MD5, URL-safe). Nothing in the store is ever overwritten,
+# so the off-site copy works with create-only access. Each set has
+# storage/<storage bucket>.index.json: every file it holds and where its copy
+# is. gc_store deletes store files no set refers to any more.
+
+# pool_of <gs://root/runs/ID> <storage bucket>: that set's shared store.
+pool_of() { printf '%s/files/%s' "${1%/*/*}" "$2"; }
+
+# obj_list <gs://bucket[/prefix]> <gcloud...>: one line per file below it,
+# "<name below the prefix>\t<key>\t<size>\t<created>". Nothing there: no lines.
+obj_list() {
+  local url="${1%/}" g=("${@:2}") pre out
+  pre="$(printf '%s' "$url" | sed -E 's#^gs://[^/]+/?##')"; [ -z "$pre" ] || pre="$pre/"
+  out="$WORKDIR/ls.json"
+  if ! "${g[@]}" storage objects list "$url/**" --raw --format=json >"$out" 2>"$WORKDIR/ls.err"; then
+    grep -qi 'matched no objects\|not found\|no urls matched' "$WORKDIR/ls.err" && return 0
+    tail -n 3 "$WORKDIR/ls.err" >&2; return 1
+  fi
+  jq -r --arg p "$pre" '.[]? | select(.name | startswith($p))
+    | [(.name | .[($p | length):]),
+       ((.md5Hash // ("c" + (.crc32c // ""))) | gsub("\\+"; "-") | gsub("/"; "_") | gsub("="; "")),
+       ((.size // 0) | tostring), (.timeCreated // "")] | @tsv' "$out"
+}
+
+# quiet_cp <gcloud...> -- <from> <to>: one file copy, retried; the names are
+# never printed (logs may be public).
+quiet_cp() {
+  local g=() a
+  while [ "$1" != "--" ]; do g+=("$1"); shift; done; shift
+  [ "$DRY_RUN" = "1" ] && return 0
+  retry "${g[@]}" storage cp "$1" "$2" --quiet >/dev/null 2>&1 || { a="$?"; warn "a file copy failed"; return "$a"; }
+}
+
+storage_changed() {
+  local dest="$1" b="$2" pool src old vs idx n miss newf newb chg
+  pool="$(pool_of "$dest" "$b")"
+  info "Storage gs://$b -> shared store files/$b (new or changed files only)"
+  src="$WORKDIR/src.tsv"; old="$WORKDIR/o.tsv"; vs="$WORKDIR/v.tsv"; idx="$WORKDIR/index.json"
+  obj_list "gs://$b" gcloud >"$src" || return 1
+  obj_list "$pool/o" gcloud >"$old" || return 1
+  obj_list "$pool/v" gcloud >"$vs" || return 1
+  # New names: one bulk copy that never overwrites.
+  newf="$(awk -F'\t' 'FILENAME==ARGV[1]{k[$1]=1; next} !($1 in k)' "$old" "$src" | wc -l | tr -d ' ')"
+  newb="$(awk -F'\t' 'FILENAME==ARGV[1]{k[$1]=1; next} !($1 in k){s+=$3} END{print s+0}' "$old" "$src")"
+  if [ "$newf" != "0" ]; then
+    rqrun gcloud storage rsync -r "gs://$b" "$pool/o" --no-clobber --quiet || return 1
+  fi
+  # Same name, other content than the first copy: its own copy under v/<key>/.
+  awk -F'\t' 'FILENAME==ARGV[1]{k[$1]=$2; next} FILENAME==ARGV[2]{v[$1]=1; next} ($1 in k) && k[$1]!=$2 && !(($2 "/" $1) in v){print $1 "\t" $2 "\t" $3}' \
+    "$old" "$vs" "$src" >"$WORKDIR/chg.tsv"
+  chg="$(wc -l <"$WORKDIR/chg.tsv" | tr -d ' ')"
+  newb="$((newb + $(awk -F'\t' '{s+=$3} END{print s+0}' "$WORKDIR/chg.tsv")))"
+  [ "$chg" = "0" ] || say "  $chg changed file(s)"
+  while IFS=$'\t' read -r n k _; do
+    quiet_cp gcloud -- "gs://$b/$n" "$pool/v/$k/$n" || return 1
+  done <"$WORKDIR/chg.tsv"
+  [ "$DRY_RUN" = "1" ] && { say "  would copy $newf new and $chg changed file(s)"; return 0; }
+  # The index, from what the store holds now.
+  obj_list "$pool/o" gcloud >"$old" || return 1
+  obj_list "$pool/v" gcloud >"$vs" || return 1
+  jq -n --arg b "$b" --rawfile s "$src" --rawfile o "$old" --rawfile v "$vs" '
+    def rows($t): $t | split("\n") | map(select(length > 0) | split("\t"));
+    (rows($o) | map({key: .[0], value: .[1]}) | from_entries) as $O
+    | (rows($v) | map({key: .[0], value: true}) | from_entries) as $V
+    | {bucket: $b, store: ("files/" + $b),
+       files: [rows($s)[] | {n: .[0], k: .[1], s: (.[2] | tonumber),
+         p: (if $O[.[0]] == .[1] then "o/" + .[0]
+             elif $V[.[1] + "/" + .[0]] then "v/" + .[1] + "/" + .[0]
+             elif $O[.[0]] != null then "o/" + .[0]
+             else null end)}]}
+    | .missing = ([.files[] | select(.p == null)] | length)
+    | .files |= map(select(.p != null))' >"$idx" || return 1
+  # A file deleted while the backup ran has no copy; it is left out.
+  miss="$(jq .missing "$idx")"
+  [ "$miss" = "0" ] || warn "$miss file(s) of gs://$b were gone before they could be copied (deleted during the backup); left out"
+  run gcloud storage cp "$idx" "$dest/storage/$b.index.json" --quiet || return 1
+  n="$(jq '.files | length' "$idx")"
+  mset --arg b "$b" --argjson n "$n" --argjson by "$(jq '[.files[].s] | add // 0' "$idx")" \
+    --argjson nf "$((newf + chg))" --argjson nb "$newb" \
+    '.storage[$b] = {objects: $n, bytes: $by, mode: "changed", store: ("files/" + $b), copiedFiles: $nf, copiedBytes: $nb}'
+  say "  $n files; copied $((newf + chg)) new or changed ($newb bytes)"
+}
+
+# store_refs <gs://bucket root> <gcloud...>: every store path any set refers to.
+# Fails when an index cannot be read (then nothing may be deleted).
+store_refs() {
+  local root="$1" g=("${@:2}") i
+  obj_list "$root/runs" "${g[@]}" >"$WORKDIR/runs.tsv" || return 1
+  for i in $(cut -f1 "$WORKDIR/runs.tsv" | grep -E '^[0-9]{8}T[0-9]{6}Z/storage/[^/]+\.index\.json$'); do
+    "${g[@]}" storage cat "$root/runs/$i" 2>/dev/null | jq -r '(.store // error("no store")) as $s | .files[] | "\($s)/\(.p)"' || { warn "cannot read the index runs/$i"; return 1; }
+  done
+}
+
+# gc_store <main|vault> <gs://bucket root>: delete store files that no set
+# refers to any more and that are older than 2 days (a backup running at the
+# same time may not have written its index yet).
+gc_store() {
+  local who="$1" root="$2" g=(gcloud) cut n
+  [ "$who" = "main" ] || g=("${GV[@]}")
+  obj_list "$root/files" "${g[@]}" >"$WORKDIR/store.tsv" || return 1
+  [ -s "$WORKDIR/store.tsv" ] || return 0
+  info "Shared file store $root/files: files no set needs any more"
+  store_refs "$root" "${g[@]}" >"$WORKDIR/refs.txt" || { warn "not cleaning the shared store"; return 1; }
+  if [ ! -s "$WORKDIR/refs.txt" ]; then warn "no set refers to the shared store; leaving it (delete it by hand if that is right)"; return 0; fi
+  cut="$(jq -nr '(now - 2 * 86400) | strftime("%Y-%m-%dT%H:%M:%S")')"
+  awk -F'\t' -v c="$cut" -v r="$root/files/" 'FILENAME==ARGV[1]{k[$0]=1; next} !(("files/" $1) in k) && $4 < c {print r $1}' \
+    "$WORKDIR/refs.txt" "$WORKDIR/store.tsv" >"$WORKDIR/gc.txt"
+  n="$(wc -l <"$WORKDIR/gc.txt" | tr -d ' ')"
+  if [ "$n" = "0" ]; then say "  nothing to delete"; return 0; fi
+  confirm "Delete $n store file(s) no backup set refers to? (recoverable for 30 days through soft delete)" || { say "  kept them"; return 0; }
+  if [ "$DRY_RUN" != "1" ]; then
+    retry "${g[@]}" storage rm -I --quiet <"$WORKDIR/gc.txt" >/dev/null 2>&1 || { warn "could not delete them"; return 1; }
+  fi
+  say "  deleted $n store file(s)"
 }
 
 step_auth() {
@@ -803,6 +932,14 @@ step_config() {
 
 # do_run [trigger]: one complete backup. Prints the id last; exits non-zero on failure.
 RUN_PATH=""
+# offsite_store: the new store files of this run's changed-mode buckets to the vault.
+offsite_store() {
+  local b
+  for b in $(jq -r '.storage | to_entries[] | select(.value.mode == "changed") | .key' "$MANIFEST"); do
+    rqrun gcloud storage rsync -r "gs://$BACKUP_BUCKET/files/$b" "gs://$OFFSITE_BUCKET/files/$b" --no-clobber --quiet || return 1
+  done
+}
+
 do_run() {
   local id dest step ok=1 required
   id="$(date -u +%Y%m%dT%H%M%SZ)"
@@ -831,7 +968,9 @@ do_run() {
   if [ "$required" = "1" ] && [ -n "$OFFSITE_BUCKET" ] && [ "$TRIGGER" != "archive" ]; then
     info "Off-site copy -> gs://$OFFSITE_BUCKET/runs/$id/"
     # Copies only (the service account may create files there, nothing else).
-    if qrun gcloud storage cp -r "$dest/*" "gs://$OFFSITE_BUCKET/runs/$id/" --quiet 2>"$WORKDIR/off.err"; then
+    # The shared file store first: store files are never overwritten.
+    if offsite_store 2>"$WORKDIR/off.err" \
+      && qrun gcloud storage cp -r "$dest/*" "gs://$OFFSITE_BUCKET/runs/$id/" --quiet 2>>"$WORKDIR/off.err"; then
       mset '.steps.offsite = "ok"'
     else
       cat "$WORKDIR/off.err" >&2
@@ -858,6 +997,7 @@ cmd_run() {
     info "BACKUP SUCCEEDED: $RUN_ID"
     # Only after a good run, so failing nights never delete anything.
     prune_sets main "gs://$BACKUP_BUCKET/runs" "$BACKUP_KEEP_DAYS" || warn "pruning old backup sets failed; the backup itself is fine"
+    gc_store main "gs://$BACKUP_BUCKET" || warn "cleaning the shared file store failed; the backup itself is fine"
   else
     die "BACKUP FAILED: $RUN_ID (see the errors above)"
   fi
@@ -1012,9 +1152,9 @@ vault_root() { printf 'gs://%s/runs' "$OFFSITE_BUCKET"; }
 cmd_prune() {
   if [ "$VAULT" = "1" ]; then
     check_vault_login
-    prune_sets vault "$(vault_root)" "$OFFSITE_KEEP_DAYS"
+    prune_sets vault "$(vault_root)" "$OFFSITE_KEEP_DAYS" && gc_store vault "gs://$OFFSITE_BUCKET"
   else
-    prune_sets main "gs://$BACKUP_BUCKET/runs" "$BACKUP_KEEP_DAYS"
+    prune_sets main "gs://$BACKUP_BUCKET/runs" "$BACKUP_KEEP_DAYS" && gc_store main "gs://$BACKUP_BUCKET"
   fi
 }
 
@@ -1030,6 +1170,7 @@ cmd_delete() {
   confirm "Delete backup set $RUN_ID ($st) from $root? (recoverable for 30 days through soft delete)" || die "stopped"
   rm_set "$where" "$root" "$RUN_ID" || die "could not delete $RUN_ID"
   info "Deleted $RUN_ID from $root"
+  gc_store "$where" "${root%/runs}" || warn "cleaning the shared file store failed"
 }
 
 # ---- restore ----------------------------------------------------------------
@@ -1040,6 +1181,33 @@ source_root() {
     archive) printf 'gs://%s/archive/%s' "$ARCHIVE_BUCKET" "$PROJECT_ID" ;;
     gs://*) printf '%s' "${FROM%/}" ;;
   esac
+}
+
+# restore_store_files <gs://set> <storage bucket> <target bucket> <gcloud...>:
+# the set's files from the shared store, under their own names.
+restore_store_files() {
+  local src="$1" b="$2" tb="$3" g=("${@:4}") pool idx n k p
+  pool="$(pool_of "$src" "$b")"; idx="$WORKDIR/rindex.json"
+  "${g[@]}" storage cat "$src/storage/$b.index.json" >"$idx" 2>/dev/null || { warn "no index storage/$b.index.json in $src"; return 1; }
+  obj_list "gs://$tb" "${g[@]}" >"$WORKDIR/before.tsv" || return 1
+  # Most files are first copies: one bulk copy of o/, then the later versions,
+  # then remove what came from o/ but is not in this set (and was not there before).
+  rqrun "${g[@]}" storage rsync -r "$pool/o" "gs://$tb" --quiet || return 1
+  n=0
+  while IFS=$'\t' read -r p k; do
+    quiet_cp "${g[@]}" -- "$pool/$p" "gs://$tb/$k" || return 1
+    n=$((n + 1))
+  done < <(jq -r '.files[] | select(.p | startswith("v/")) | [.p, .n] | @tsv' "$idx")
+  [ "$n" = "0" ] || say "  $n later version(s)"
+  [ "$DRY_RUN" = "1" ] && return 0
+  obj_list "$pool/o" "${g[@]}" >"$WORKDIR/so.tsv" || return 1
+  jq -r '.files[].n' "$idx" >"$WORKDIR/keep.txt"
+  awk -F'\t' -v t="gs://$tb/" 'FILENAME==ARGV[1]{k[$0]=1; next} FILENAME==ARGV[2]{k[$1]=1; next} !($1 in k){print t $1}' \
+    "$WORKDIR/keep.txt" "$WORKDIR/before.tsv" "$WORKDIR/so.tsv" >"$WORKDIR/extra.txt"
+  if [ -s "$WORKDIR/extra.txt" ]; then
+    retry "${g[@]}" storage rm -I --quiet <"$WORKDIR/extra.txt" >/dev/null 2>&1 || return 1
+    say "  removed $(wc -l <"$WORKDIR/extra.txt" | tr -d ' ') file(s) that are not in this set"
+  fi
 }
 
 # auth_batch_body <users.json> <hash-config.json> <from>: accounts:batchGet
@@ -1131,7 +1299,11 @@ restore_into() {
       esac
     fi
     info "Storage $b -> gs://$tb"
-    rqrun "${g[@]}" storage rsync -r "$src/storage/$b" "gs://$tb" --quiet
+    if [ "$(jq -r --arg b "$b" '.storage[$b].mode // "full"' "$m")" = "changed" ]; then
+      restore_store_files "$src" "$b" "$tb" "${g[@]}" || die "restoring the files of $b failed"
+    else
+      rqrun "${g[@]}" storage rsync -r "$src/storage/$b" "gs://$tb" --quiet
+    fi
     [ "$DRY_RUN" = "1" ] || printf 'storage %s %s %s\n' "$b" "$(jq -r --arg b "$b" '.storage[$b].objects' "$m")" "$(object_count_as "gs://$tb" "${g[@]}")" >>"$WORKDIR/compare"
   done
 
@@ -1227,7 +1399,7 @@ cmd_drill() {
     fi
     # Storage and Auth: the files are there and the users convert to the import format.
     for n in $(jq -r '.storage | keys[]' "$m"); do
-      printf 'storage %s %s %s\n' "$n" "$(jq -r --arg b "$n" '.storage[$b].objects' "$m")" "$(object_count_as "$src/storage/$n" gcloud)" >>"$WORKDIR/compare"
+      printf 'storage %s %s %s\n' "$n" "$(jq -r --arg b "$n" '.storage[$b].objects' "$m")" "$(stored_file_count "$src" "$n" "$m")" >>"$WORKDIR/compare"
     done
     if [ "$(jq -r '.auth.users // 0' "$m")" != "0" ]; then
       gcloud storage cp "$src/auth/users.json" "$src/auth/hash-config.json" "$WORKDIR/" --quiet >/dev/null 2>&1 || ok=0
@@ -1242,6 +1414,19 @@ cmd_drill() {
   fi
   [ "$DRY_RUN" = "1" ] && return 0
   if [ "$ok" = "1" ]; then info "DRILL PASSED: backup $id restores with every count matching."; else die "DRILL FAILED: see above."; fi
+}
+
+# stored_file_count <gs://set> <storage bucket> <manifest>: files of the set
+# that are really there (changed mode: index entries whose store copy exists).
+stored_file_count() {
+  local src="$1" b="$2" pool
+  if [ "$(jq -r --arg b "$b" '.storage[$b].mode // "full"' "$3")" != "changed" ]; then
+    object_count_as "$src/storage/$b" gcloud; return
+  fi
+  pool="$(pool_of "$src" "$b")"
+  gcloud storage cat "$src/storage/$b.index.json" >"$WORKDIR/dindex.json" 2>/dev/null || { echo 0; return; }
+  { obj_list "$pool/o" gcloud | awk -F'\t' '{print "o/" $1}'; obj_list "$pool/v" gcloud | awk -F'\t' '{print "v/" $1}'; } >"$WORKDIR/have.txt" || { echo 0; return; }
+  jq -r '.files[].p' "$WORKDIR/dindex.json" | awk 'FILENAME==ARGV[1]{h[$0]=1; next} ($0 in h){n++} END{print n+0}' "$WORKDIR/have.txt" -
 }
 
 cleanup_here() {

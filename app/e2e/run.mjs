@@ -209,10 +209,15 @@ async function main() {
 
     await page.goto('http://127.0.0.1:5055/settings');
     await page.locator('#min-demo-fn').fill('5');
-    await page.getByRole('button', { name: 'Open pull request' }).click();
+    await page.locator('tr', { has: page.locator('#min-demo-fn') }).getByRole('button', { name: 'Open pull request' }).click();
     await page.getByText('Pull request opened. Merge it to apply.').waitFor({ timeout: 30000 });
     const minTree = fakes.calls.filter((c) => c.path === '/repos/dagangilat/foundation-next/git/trees').pop();
     check('changing the minimum opens a pull request with KEEP_MIN_SETS=5', minTree && /KEEP_MIN_SETS=5/.test(minTree.body.tree[0].content));
+    await page.locator('#mode-demo-fn').selectOption('changed');
+    await page.locator('tr', { has: page.locator('#mode-demo-fn') }).getByRole('button', { name: 'Open pull request' }).click();
+    await page.getByText('Pull request opened. Merge it to apply from the next backup.').waitFor({ timeout: 30000 });
+    const modeTree = fakes.calls.filter((c) => c.path === '/repos/dagangilat/foundation-next/git/trees').pop();
+    check('choosing changed-only media copies opens a pull request with STORAGE_MODE=changed', modeTree && /STORAGE_MODE=changed/.test(modeTree.body.tree[0].content) && /KEEP_MIN_SETS=/.test(modeTree.body.tree[0].content));
     // Email alerts.
     const sent = () => fakes.emails.map((e) => e.subject);
     await page.getByRole('button', { name: 'Send me a test' }).click();

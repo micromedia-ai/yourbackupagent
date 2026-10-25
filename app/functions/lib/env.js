@@ -35,6 +35,7 @@ export function projectSettings(env) {
     backupBucket: env.BACKUP_BUCKET || (id ? `${id}-backups` : ''),
     keepDays: n(env.BACKUP_KEEP_DAYS, 14),
     keepMinSets: n(env.KEEP_MIN_SETS, 7),
+    storageMode: env.STORAGE_MODE === 'changed' ? 'changed' : 'full',
     maxAgeHours: n(env.MAX_AGE_HOURS, 26),
     offsiteBucket: env.OFFSITE_BUCKET || '',
     offsiteKeepDays: n(env.OFFSITE_KEEP_DAYS, 90),

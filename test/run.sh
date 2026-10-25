@@ -120,6 +120,10 @@ expect "a running label older than 6 hours is a dead drill and does not block" '
 FAKE_LABELS='{"drill-of":"other-app","drill-data":"passed"}' bk rebuild --data-only --yes --replace
 expect "--replace takes it over" '[ $? -eq 0 ] && grep -q "DATA RESTORE PASSED" "$T/out"' "$T/out"
 
+# --- offsite on an existing vault bucket -------------------------------------------------------
+: >"$T/calls.log"
+bk offsite --yes;         expect "offsite accepts the vault's own existing bucket and grants add + read" '[ $? -eq 0 ] && grep -q "storage buckets describe gs://demo-vault-offsite --raw" "$T/calls.log" && grep -q "add-iam-policy-binding gs://demo-vault-offsite .*objectCreator" "$T/calls.log"' "$T/out"
+
 # --- rebuild (data only) ---------------------------------------------------------------------
 : >"$T/calls.log"
 bk rebuild --data-only;   expect "rebuild restores the newest off-site run and passes" '[ $? -eq 0 ] && grep -q "DATA RESTORE PASSED" "$T/out" && grep -q "Restoring $ID from gs://demo-vault-offsite/runs/$ID into demo-drill" "$T/out"' "$T/out"

@@ -167,6 +167,16 @@ step "Point-in-time recovery, delete protection, managed backups (protect)"
 if [ -n "$VAULT" ]; then
   step "Off-site bucket in the vault (offsite)"
   (cd "$WORK" && run "$K" offsite)
+  # The first backup runs here as the project owner: when that is not the
+  # vault owner, it may add to (and read, to copy) this project's off-site bucket.
+  OFFSITE="$(val OFFSITE_BUCKET)"
+  lower() { printf %s "$1" | tr '[:upper:]' '[:lower:]'; }
+  if [ -n "$OFFSITE" ] && [ "$(lower "$OWNER")" != "$(lower "$VAULT")" ]; then
+    for role in roles/storage.objectCreator roles/storage.objectViewer; do
+      run gcloud storage buckets add-iam-policy-binding "gs://$OFFSITE" --member "user:$OWNER" \
+        --role "$role" --account "$VAULT" --format=none --quiet
+    done
+  fi
 fi
 step "First backup (run)"
 (cd "$WORK" && run "$K" run)

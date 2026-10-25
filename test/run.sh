@@ -175,6 +175,20 @@ expect "a failed run deletes nothing" '[ $? -ne 0 ] && [ -d "$R/20200109T020000Z
 FAKE_LABELS='{"drill-of":"demo-app","drill-run":"x","drill-data":"passed"}' bk retire --yes
 expect "retire refuses without a drill of the newest archive" '[ $? -ne 0 ] && grep -q -E "no archive of demo-app|has not passed a rebuild drill" "$T/out"' "$T/out"
 
+# --- a project without Firestore (files and users only) -------------------------------------
+{ grep -v '^BACKUP_BUCKET=' "$T/backup.env"; echo "BACKUP_BUCKET=nofs-backups"; } >"$T/nofs.env"
+: >"$T/calls.log"
+FAKE_NO_FIRESTORE=1 BACKUP_ENV="$T/nofs.env" bk setup --yes
+expect "setup without Firestore puts the backup bucket where the Storage bucket is" '[ $? -eq 0 ] && grep -q "storage buckets create gs://nofs-backups .*--location us-east1" "$T/calls.log"' "$T/out"
+: >"$T/calls.log"
+FAKE_NO_FIRESTORE=1 BACKUP_ENV="$T/nofs.env" bk run --yes
+expect "a backup without Firestore succeeds with files and users" '[ $? -eq 0 ] && grep -q "BACKUP SUCCEEDED" "$T/out" && ! grep -q "exportDocuments" "$T/calls.log"' "$T/out"
+: >"$T/calls.log"
+FAKE_NO_FIRESTORE=1 BACKUP_ENV="$T/nofs.env" bk drill --here --yes
+expect "drill --here without Firestore checks files and users, makes no database" '[ $? -eq 0 ] && grep -q "DRILL PASSED" "$T/out" && ! grep -q "firestore databases" "$T/calls.log"' "$T/out"
+FAKE_NO_FIRESTORE=1 BACKUP_ENV="$T/nofs.env" bk status
+expect "status says the project has no Firestore" '[ $? -eq 0 ] && grep -q "Firestore: none in this project" "$T/out"' "$T/out"
+
 # --- the project wrapper ----------------------------------------------------------------------
 mkdir -p "$T/proj/backup-kit"
 cp "$HERE/../templates/backup-kit-wrapper.sh" "$T/proj/backup-kit/backup.sh"

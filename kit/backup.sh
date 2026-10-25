@@ -396,16 +396,29 @@ preflight() {
 
 # ---- setup ------------------------------------------------------------------
 db_location() { api GET "$(fs_db "$PROJECT_ID" "${1:-(default)}")" | jq -r '.locationId // empty'; }
+# Where the project keeps its data: the (default) Firestore database, or for a
+# project without Firestore (files and users only) its first Storage bucket.
+data_location() {
+  local loc b
+  if [ -n "$(firestore_databases)" ]; then
+    loc="$(db_location)" || return 1
+  else
+    b="$(storage_buckets | head -n 1)"
+    [ -n "$b" ] || { printf '%s has neither a Firestore database nor a Storage bucket\n' "$PROJECT_ID" >&2; return 1; }
+    loc="$(gcloud storage buckets describe "gs://$b" --format='value(location)' 2>/dev/null | tr 'A-Z' 'a-z')"
+  fi
+  [ -n "$loc" ] || { printf 'cannot tell where %s keeps its data\n' "$PROJECT_ID" >&2; return 1; }
+  printf '%s' "$loc"
+}
 
 ensure_backup_bucket() {
   local loc life
   if bucket_exists_as "$BACKUP_BUCKET" gcloud; then
     info "gs://$BACKUP_BUCKET exists"
   else
-    loc="$(db_location)" || die "cannot read the Firestore database of $PROJECT_ID"
-    [ -n "$loc" ] || die "$PROJECT_ID has no (default) Firestore database"
+    loc="$(data_location)" || die "cannot tell where to put gs://$BACKUP_BUCKET (see above)"
     loc="$(bucket_location_for_db "$loc")"
-    confirm "Create backup bucket gs://$BACKUP_BUCKET in $loc (the Firestore location)?" || die "stopped"
+    confirm "Create backup bucket gs://$BACKUP_BUCKET in $loc (where the project's data is)?" || die "stopped"
     run gcloud storage buckets create "gs://$BACKUP_BUCKET" --project "$PROJECT_ID" --location "$loc" \
       --uniform-bucket-level-access --public-access-prevention --soft-delete-duration=30d \
       || die "could not create gs://$BACKUP_BUCKET (bucket names are global; set BACKUP_BUCKET to another name)"
@@ -538,7 +551,7 @@ cmd_offsite() {
   [ -n "$CI_SA" ] || die "CI_SA is empty in $ENV_FILE; run setup first"
   check_vault_login
   local loc
-  loc="$(multi_region_for "$(db_location)")"
+  loc="$(multi_region_for "$(data_location)")"
   info "Off-site bucket gs://$OFFSITE_BUCKET ($loc) in $VAULT_PROJECT, owned by $VAULT_ACCOUNT"
   confirm "Set it up (keeps $OFFSITE_KEEP_DAYS days; GitHub may add and read files, never delete)?" || die "stopped"
   ensure_vault_project "$VAULT_PROJECT" "YourBackupAgent vault"
@@ -852,8 +865,10 @@ cmd_run() {
 
 # ---- check / status ---------------------------------------------------------
 protection_report() {
-  local db d
-  for db in $(firestore_databases); do
+  local db d dbs
+  dbs="$(firestore_databases)"
+  if [ -z "$dbs" ]; then say "  Firestore: none in this project (nothing to protect there)"; return 0; fi
+  for db in $dbs; do
     d="$(api GET "$(fs_db "$PROJECT_ID" "$db")")" || { warn "cannot read database $db"; continue; }
     jq -r --arg db "$db" '"  \($db): \(.locationId) · point-in-time recovery \(if .pointInTimeRecoveryEnablement == "POINT_IN_TIME_RECOVERY_ENABLED" then "on" else "OFF" end) · delete protection \(if .deleteProtectionState == "DELETE_PROTECTION_ENABLED" then "on" else "OFF" end)"' <<<"$d"
     if [ -n "${GITHUB_ACTIONS:-}" ]; then
@@ -1186,23 +1201,30 @@ cmd_drill() {
   src="gs://$BACKUP_BUCKET/runs/$id"
   m="$WORKDIR/m.json"
   manifest_of "$src" >"$m" || die "no manifest in $src"
-  db="drill-$(date -u +%Y%m%d%H%M)"
-  info "Restore drill in $PROJECT_ID: backup $id (default database) -> temporary database $db"
-  confirm "Create database $db, import the backup, compare, delete it? (production data is not touched)" || die "stopped"
-  run gcloud firestore databases create --database="$db" --location="$(jq -r '.firestore["(default)"].location' "$m")" --project "$PROJECT_ID" --format=none \
-    || die "could not create database $db"
-  if ! { op="$(change main POST "$(fs_db "$PROJECT_ID" "$db"):importDocuments" "{\"inputUriPrefix\":\"$src/firestore/default\"}" | jq -r '.name // empty')" \
-         && { [ "$DRY_RUN" = "1" ] || wait_op main "https://firestore.googleapis.com/v1/$op" "import into $db"; }; }; then
-    ok=0
+  db=""
+  if jq -e '.firestore | has("(default)")' "$m" >/dev/null; then
+    db="drill-$(date -u +%Y%m%d%H%M)"
+    info "Restore drill in $PROJECT_ID: backup $id (default database) -> temporary database $db"
+    confirm "Create database $db, import the backup, compare, delete it? (production data is not touched)" || die "stopped"
+    run gcloud firestore databases create --database="$db" --location="$(jq -r '.firestore["(default)"].location' "$m")" --project "$PROJECT_ID" --format=none \
+      || die "could not create database $db"
+    if ! { op="$(change main POST "$(fs_db "$PROJECT_ID" "$db"):importDocuments" "{\"inputUriPrefix\":\"$src/firestore/default\"}" | jq -r '.name // empty')" \
+           && { [ "$DRY_RUN" = "1" ] || wait_op main "https://firestore.googleapis.com/v1/$op" "import into $db"; }; }; then
+      ok=0
+    fi
+  else
+    info "Restore drill in $PROJECT_ID: backup $id has no Firestore database; checking its files and users"
   fi
   if [ "$DRY_RUN" != "1" ] && [ "$ok" = "1" ]; then
-    collection_counts "$PROJECT_ID" "$db" >"$WORKDIR/got.txt" || ok=0
-    jq -r '.firestore["(default)"].collections | to_entries[] | "\(.key) \(.value)"' "$m" | sort >"$WORKDIR/want.txt"
     : >"$WORKDIR/compare"
-    for n in $(cut -d' ' -f1 "$WORKDIR/want.txt" "$WORKDIR/got.txt" | sort -u); do
-      want="$(awk -v c="$n" '$1==c{print $2}' "$WORKDIR/want.txt")"; got="$(awk -v c="$n" '$1==c{print $2}' "$WORKDIR/got.txt")"
-      printf 'firestore %s %s %s\n' "$n" "${want:-0}" "${got:-0}" >>"$WORKDIR/compare"
-    done
+    if [ -n "$db" ]; then
+      collection_counts "$PROJECT_ID" "$db" >"$WORKDIR/got.txt" || ok=0
+      jq -r '.firestore["(default)"].collections | to_entries[] | "\(.key) \(.value)"' "$m" | sort >"$WORKDIR/want.txt"
+      for n in $(cut -d' ' -f1 "$WORKDIR/want.txt" "$WORKDIR/got.txt" | sort -u); do
+        want="$(awk -v c="$n" '$1==c{print $2}' "$WORKDIR/want.txt")"; got="$(awk -v c="$n" '$1==c{print $2}' "$WORKDIR/got.txt")"
+        printf 'firestore %s %s %s\n' "$n" "${want:-0}" "${got:-0}" >>"$WORKDIR/compare"
+      done
+    fi
     # Storage and Auth: the files are there and the users convert to the import format.
     for n in $(jq -r '.storage | keys[]' "$m"); do
       printf 'storage %s %s %s\n' "$n" "$(jq -r --arg b "$n" '.storage[$b].objects' "$m")" "$(object_count_as "$src/storage/$n" gcloud)" >>"$WORKDIR/compare"
@@ -1214,8 +1236,10 @@ cmd_drill() {
     fi
     compare_report || ok=0
   fi
-  info "Deleting $db"
-  rrun gcloud firestore databases delete --database="$db" --project "$PROJECT_ID" --quiet --format=none || warn "delete it later: backup.sh cleanup --here"
+  if [ -n "$db" ]; then
+    info "Deleting $db"
+    rrun gcloud firestore databases delete --database="$db" --project "$PROJECT_ID" --quiet --format=none || warn "delete it later: backup.sh cleanup --here"
+  fi
   [ "$DRY_RUN" = "1" ] && return 0
   if [ "$ok" = "1" ]; then info "DRILL PASSED: backup $id restores with every count matching."; else die "DRILL FAILED: see above."; fi
 }
@@ -1443,7 +1467,7 @@ cmd_archive() {
   confirm "Take a full backup of $PROJECT_ID now and copy it to the archive?" || die "stopped"
   ensure_backup_bucket
   ensure_vault_project "$VAULT_PROJECT" "YourBackupAgent vault"
-  loc="$(multi_region_for "$(db_location)")"
+  loc="$(multi_region_for "$(data_location)")"
   vault_bucket "$ARCHIVE_BUCKET" "$loc" ARCHIVE 0
   add_lien "$VAULT_PROJECT" "YourBackupAgent vault: off-site backups and archives" "${GV[@]}"
   TRIGGER=archive

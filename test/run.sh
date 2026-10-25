@@ -127,6 +127,7 @@ bk offsite --yes;         expect "offsite accepts the vault's own existing bucke
 # --- rebuild (data only) ---------------------------------------------------------------------
 : >"$T/calls.log"
 bk rebuild --data-only;   expect "rebuild restores the newest off-site run and passes" '[ $? -eq 0 ] && grep -q "DATA RESTORE PASSED" "$T/out" && grep -q "Restoring $ID from gs://demo-vault-offsite/runs/$ID into demo-drill" "$T/out"' "$T/out"
+expect "the wipe clears the last drill's Auth blocking functions" 'grep -q "blockingFunctions" "$T/calls.log"' "$T/out"
 expect "rebuild labels the drill project as passed through the API" '[ "$(tail -n 1 "$T/labels.log" | jq -r "[.\"drill-of\", .\"drill-data\", .\"drill-run\"] | join(\",\")")" = "demo-app,passed,$(tr A-Z a-z <<<"$ID")" ]' "$T/labels.log"
 expect "rebuild never reads or changes production" '! grep -E "projects/demo-app/|--project[= ]demo-app( |$)|gs://demo-app" "$T/calls.log" | grep -q .' "$T/calls.log"
 expect "rebuild wiped the drill and took old CI owners away" 'grep -q "remove-iam-policy-binding demo-drill --member=serviceAccount:old-ci@other.iam.gserviceaccount.com" "$T/calls.log"'

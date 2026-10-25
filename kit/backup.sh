@@ -48,6 +48,8 @@ DRILL_PROJECT="${DRILL_PROJECT:-}"
 CHAIN_SECRETS="${CHAIN_SECRETS:-}"
 DRILL_KMS_KEYS="${DRILL_KMS_KEYS:-}"
 DRILL_WORKFLOW="${DRILL_WORKFLOW:-rebuild-drill.yml}"
+# The manager app's drill runner owns the shared drill project for good; wipes keep it.
+DRILL_RUNNER_SA="${DRILL_RUNNER_SA:-kit-runner@yourbackupagent-app.iam.gserviceaccount.com}"
 RUN_TIMEOUT_MIN="${RUN_TIMEOUT_MIN:-60}"
 RETRIES="${RETRIES:-4}"
 
@@ -1537,9 +1539,10 @@ wipe_drill() {
   for site in $(dapi GET "https://firebasehosting.googleapis.com/v1beta1/projects/$DRILL_PROJECT/sites" 2>/dev/null | jq -r '.sites[]?.name'); do
     change vault POST "https://firebasehosting.googleapis.com/v1beta1/$site/releases" '{"type":"SITE_DISABLE"}' "$DRILL_PROJECT" >/dev/null 2>&1 || true
   done
-  # Take back every outside service account's owner role (GitHub deploy keys of earlier drills).
+  # Take back every outside service account's owner role (GitHub deploy keys
+  # of earlier drills), except the manager app's drill runner.
   for sa in $("${GV[@]}" projects get-iam-policy "$DRILL_PROJECT" --format=json 2>/dev/null \
-      | jq -r --arg p "$DRILL_PROJECT" '.bindings[]? | select(.role == "roles/owner") | .members[] | select(startswith("serviceAccount:") and (endswith("@" + $p + ".iam.gserviceaccount.com") | not))'); do
+      | jq -r --arg p "$DRILL_PROJECT" --arg keep "serviceAccount:$DRILL_RUNNER_SA" '.bindings[]? | select(.role == "roles/owner") | .members[] | select(startswith("serviceAccount:") and (endswith("@" + $p + ".iam.gserviceaccount.com") | not) and . != $keep)'); do
     rrun "${GV[@]}" projects remove-iam-policy-binding "$DRILL_PROJECT" --member="$sa" --role=roles/owner --condition=None --quiet --format=none
   done
   drill_labels clear || warn "could not clear the labels of $DRILL_PROJECT"

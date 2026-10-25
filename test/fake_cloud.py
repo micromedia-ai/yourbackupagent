@@ -183,7 +183,7 @@ def gcloud(args):
         print("github-deploy@demo-app.iam.gserviceaccount.com")
         return 0
     if pos[:2] == ["projects", "get-iam-policy"]:
-        print(json.dumps({"bindings": [{"role": "roles/owner", "members": ["serviceAccount:old-ci@other.iam.gserviceaccount.com", "user:owner@example.com"]}]}))
+        print(json.dumps({"bindings": [{"role": "roles/owner", "members": ["serviceAccount:old-ci@other.iam.gserviceaccount.com", "serviceAccount:kit-runner@yourbackupagent-app.iam.gserviceaccount.com", "user:owner@example.com"]}]}))
         return 0
     if pos[:2] == ["billing", "projects"]:
         print("True")

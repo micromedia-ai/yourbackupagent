@@ -2,7 +2,15 @@
   "hosting": {
     "public": "dist",
     "ignore": ["firebase.json", "**/.*"],
-    "rewrites": [{ "source": "**", "destination": "/index.html" }],
+    "rewrites": [
+      { "source": "/mcp", "function": { "functionId": "mcp", "region": "us-central1" } },
+      { "source": "/mcp/**", "function": { "functionId": "mcp", "region": "us-central1" } },
+      { "source": "/.well-known/oauth-protected-resource", "function": { "functionId": "mcp", "region": "us-central1" } },
+      { "source": "/.well-known/oauth-protected-resource/**", "function": { "functionId": "mcp", "region": "us-central1" } },
+      { "source": "/.well-known/oauth-authorization-server", "function": { "functionId": "mcp", "region": "us-central1" } },
+      { "source": "/.well-known/oauth-authorization-server/**", "function": { "functionId": "mcp", "region": "us-central1" } },
+      { "source": "**", "destination": "/index.html" }
+    ],
     "headers": [
       { "source": "**", "headers": [
         { "key": "X-Frame-Options", "value": "DENY" },

@@ -245,6 +245,57 @@ async function main() {
     check('size watch levels are saved', Number(cfg.fields?.sizeWarnSetGB?.doubleValue) === 1.5 && Number(cfg.fields?.sizeWarnTotalGB?.integerValue ?? cfg.fields?.sizeWarnTotalGB?.doubleValue) === 30, JSON.stringify(cfg.fields || cfg));
     await page.screenshot({ path: `${SHOTS}/8-settings.png`, fullPage: true });
 
+    // MCP connector: discovery, sign-in as the owner, tools with the app's rules, disconnect.
+    const H = 'http://127.0.0.1:5055';
+    const prm = await (await fetch(`${H}/.well-known/oauth-protected-resource/mcp`)).json();
+    check('MCP: discovery names this app\'s /mcp and its sign-in', prm.resource === `${H}/mcp` && (await (await fetch(`${H}/.well-known/oauth-authorization-server`)).json()).authorization_endpoint === `${H}/connect-ai`, JSON.stringify(prm));
+    const rpc = (token, method, params = {}) => fetch(`${H}/mcp`, { method: 'POST', headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) });
+    const anon = await rpc('', 'tools/list');
+    check('MCP: without sign-in it answers 401 and points at the sign-in', anon.status === 401 && /resource_metadata="http:\/\/127\.0\.0\.1:5055\/\.well-known\/oauth-protected-resource\/mcp"/.test(anon.headers.get('www-authenticate') || ''));
+    const CB = 'https://claude.ai/api/mcp/auth_callback';
+    const client = await (await fetch(`${H}/mcp/oauth/register`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ client_name: 'Claude', redirect_uris: [CB] }) })).json();
+    const { createHash, randomBytes } = await import('node:crypto');
+    const verifier = randomBytes(32).toString('base64url');
+    const challenge = createHash('sha256').update(verifier).digest('base64url');
+    let backTo = '';
+    await page.route('https://claude.ai/**', (r) => { backTo = r.request().url(); return r.fulfill({ status: 200, body: 'back in Claude' }); });
+    await page.goto(`${H}/connect-ai?response_type=code&client_id=${client.client_id}&redirect_uri=${encodeURIComponent(CB)}&state=st8&code_challenge=${challenge}&code_challenge_method=S256`);
+    await page.getByText('Claude asks to use YourBackupAgent as you').waitFor({ timeout: 30000 });
+    await page.screenshot({ path: `${SHOTS}/12-connect-ai.png` });
+    await page.getByRole('button', { name: 'Allow' }).click();
+    const tb = Date.now();
+    while (!backTo && Date.now() - tb < 30000) await new Promise((r) => setTimeout(r, 300));
+    const back = new URL(backTo || 'http://x/');
+    check('MCP: Allow sends Claude back with a code and its state', back.searchParams.get('state') === 'st8' && !!back.searchParams.get('code'), backTo);
+    const tok = await (await fetch(`${H}/mcp/oauth/token`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ grant_type: 'authorization_code', code: back.searchParams.get('code') || '', client_id: client.client_id, redirect_uri: CB, code_verifier: verifier }) })).json();
+    check('MCP: the code becomes an access token (form-encoded, PKCE)', /^ybat_/.test(tok.access_token || ''), JSON.stringify(tok));
+    const tool = async (name, args = {}) => (await (await rpc(tok.access_token, 'tools/call', { name, arguments: args })).json()).result;
+    const tools = (await (await rpc(tok.access_token, 'tools/list')).json()).result.tools.map((t) => t.name);
+    check('MCP: lists the backup tools', ['get_overview', 'list_sets', 'back_up_now', 'rebuild_drill', 'delete_sets', 'production_restore_command'].every((t) => tools.includes(t)), tools.join());
+    const mov = await tool('get_overview');
+    check('MCP: overview shows Foundation Next with its health', mov.structuredContent.projects.some((x) => x.projectId === 'demo-fn' && x.health && x.health.level), JSON.stringify(mov).slice(0, 300));
+    const ls = await tool('list_sets', { project: 'demo-fn' });
+    check('MCP: lists the sets that are left', ls.structuredContent.sets.length === 4, JSON.stringify(ls).slice(0, 300));
+    const pv = await tool('delete_sets', { project: 'demo-fn', run_ids: [good[2]] });
+    check('MCP: delete without confirm only says it is not allowed (would go below the minimum)', pv.structuredContent.preview === true && pv.structuredContent.allowed === false && (await list('demo-fn-backups', `runs/${good[2]}/`)).length > 0, JSON.stringify(pv));
+    const del = await tool('delete_sets', { project: 'demo-fn', run_ids: [good[2]], confirm: true });
+    check('MCP: delete with confirm is refused by the same rule, and nothing is deleted', del.isError === true && /would leave 2 good sets/.test(del.structuredContent.error) && (await list('demo-fn-backups', `runs/${good[2]}/`)).length > 0, JSON.stringify(del));
+    const disp0 = fakes.calls.filter((c) => c.path.endsWith('/backup.yml/dispatches')).length;
+    const bk = await tool('back_up_now', { project: 'demo-fn' });
+    check('MCP: back up now starts the Backup workflow', !bk.isError && fakes.calls.filter((c) => c.path.endsWith('/backup.yml/dispatches')).length === disp0 + 1, JSON.stringify(bk));
+    const rcmd = await tool('production_restore_command', { project: 'demo-fn', run_id: good[0] });
+    check('MCP: production restore is a command, never done from here', (rcmd.structuredContent.command || '').includes(`backup-kit/backup.sh restore --to demo-fn --run ${good[0]}`));
+    const lg = await tool('get_log', { limit: 10 });
+    check('MCP: its changes are logged with the person and the assistant', lg.structuredContent.log.some((l) => l.action === 'back up now' && l.by === 'dagan.gilat@gmail.com via Claude') && lg.structuredContent.log.some((l) => l.action === 'delete sets' && l.status === 'refused'), JSON.stringify(lg.structuredContent.log.slice(0, 4)));
+    await page.goto(`${H}/settings`);
+    const grantRow = page.locator('.grants li', { hasText: 'Claude' });
+    await grantRow.waitFor({ timeout: 30000 });
+    check('Settings lists the connected assistant and the connector address', (await page.locator('#connector-url').textContent()) === `${H}/mcp`);
+    await grantRow.getByRole('button', { name: 'Disconnect' }).click();
+    await page.getByText('Disconnected Claude.').waitFor({ timeout: 30000 });
+    check('MCP: after Disconnect the token stops working', (await rpc(tok.access_token, 'tools/list')).status === 401);
+    await page.unroute('https://claude.ai/**');
+
     // Phone width.
     const phone = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2 });
     const pp = await phone.newPage();

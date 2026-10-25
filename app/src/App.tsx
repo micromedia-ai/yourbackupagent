@@ -10,6 +10,7 @@ import { Settings } from './pages/Settings';
 import { Protect } from './pages/Protect';
 import { Landing } from './pages/Landing';
 import { RequestAccess } from './pages/RequestAccess';
+import { ConnectAi } from './pages/ConnectAi';
 
 const NAV = [
   ['/', 'Overview'],
@@ -55,6 +56,7 @@ export function App() {
   else if (path === '/reports') page = <Reports />;
   else if (path === '/settings') page = <Settings />;
   else if (path === '/protect') page = <Protect />;
+  else if (path === '/connect-ai') page = <ConnectAi email={user.email || ''} />;
   else page = <p>Not found. <a {...link('/')}>Overview</a></p>;
 
   return (

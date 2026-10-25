@@ -94,6 +94,7 @@ export function Settings() {
         </div>
         <button className="btn" disabled={!!busy} onClick={() => run('watch', async () => { await call('saveSettings', { sizeWarnSetGB: watch.set, sizeWarnTotalGB: watch.total }); return { text: 'Saved. It applies from the next refresh.' }; })}>Save</button>
       </section>
+      <Connector />
       <section className="panel">
         <h4>Repositories</h4>
         <p className="small">Read on every refresh. A repository with <code>backup-kit/backup.env</code> shows up as a project. <a {...link('/protect')}>Protect a new repository</a> adds it here.</p>
@@ -135,5 +136,35 @@ export function Settings() {
         <button className="btn" disabled={!!busy} onClick={() => run('save', async () => { await call('saveSettings', { emails: lines(emails) }); return { text: 'Saved.' }; })}>Save access list</button>
       </section>
     </div>
+  );
+}
+
+type Grant = { id: string; clientName: string; email: string; createdAt: string | null; lastUsedAt: string | null };
+
+// The MCP connector: its address, and the assistants signed in to it.
+function Connector() {
+  const [data, setData] = useState<{ grants: Grant[]; url: string } | null>(null);
+  const { busy, run, banner } = useBusy();
+  const load = () => call<{ grants: Grant[]; url: string }>('mcpGrants', { action: 'list' }).then(setData).catch(() => setData({ grants: [], url: `${location.origin}/mcp` }));
+  useEffect(() => { void load(); }, []);
+  const url = data?.url || `${location.origin}/mcp`;
+  return (
+    <section className="panel" id="connector">
+      <h4>AI assistant connector</h4>
+      <p className="small">Use YourBackupAgent from Claude: in Claude, Settings → Connectors → Add custom connector, paste this address, then sign in here with Google and tap Allow. Only people on the access list can connect. It has the same rules as this app, and everything it does is in the log.</p>
+      <div className="code"><pre id="connector-url">{url}</pre></div>
+      {banner}
+      {data && data.grants.length === 0 && <p className="small muted">No assistant is connected.</p>}
+      {data && data.grants.length > 0 && (
+        <ul className="requests grants">
+          {data.grants.map((g) => (
+            <li key={g.id}>
+              <span><b>{g.clientName}</b> as {g.email} <span className="small muted">connected {when(g.createdAt ? new Date(g.createdAt) : null)}, last used {when(g.lastUsedAt ? new Date(g.lastUsedAt) : null)}</span></span>
+              <button className="btn small" disabled={!!busy} onClick={() => run('grant', async () => { await call('mcpGrants', { action: 'remove', id: g.id }); await load(); return { text: `Disconnected ${g.clientName}.` }; })}>Disconnect</button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
   );
 }

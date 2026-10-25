@@ -60,6 +60,27 @@ which and who; "Send me a test" sends the summary to you.
 
 Then open https://yourbackupagent-app.web.app, sign in, and press Refresh now.
 
+## Claude connector (MCP)
+
+`https://yourbackupagent-app.web.app/mcp` is a remote MCP server for an AI
+assistant. In Claude: Settings -> Connectors -> Add custom connector, paste the
+address, then sign in at `/connect-ai` with Google and tap Allow. Only people on
+the access list can connect (OAuth 2.1 with PKCE and dynamic registration;
+tokens last an hour, refresh tokens 30 days; codes and tokens are stored only
+as hashes under the server-only `mcp/` documents). Settings lists the connected
+assistants and disconnects them; a token also stops working when its person
+leaves the access list.
+
+Tools (`functions/lib/mcp.js`): `get_overview`, `list_sets`, `get_log`,
+`refresh`, `back_up_now`, `restore_drill`, `rebuild_drill`, `wipe_drill_project`,
+`prune_sets`, `delete_sets`, `production_restore_command`. They run the same
+code as the app's buttons, so the same rules hold: never below a project's
+minimum of good sets, one drill at a time, no vault deletes (those need your
+own Google sign-in in the app), production only as a command for you to run.
+`prune_sets`, `delete_sets` and `wipe_drill_project` only show what they would
+do unless called with `confirm: true`. Every change is logged as
+"you via Claude".
+
 ## Tests
 
 ```bash

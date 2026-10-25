@@ -419,7 +419,7 @@ preflight() {
     say "  Account: $VAULT_ACCOUNT (vault owner; production is not used)"
     vtoken >/dev/null
   else
-    say "  Account: $( [ -n "${GITHUB_ACTIONS:-}" ] && echo 'GitHub Actions service account' || echo "$who")"
+    say "  Account: $( [ -n "${GITHUB_ACTIONS:-}" ] && [ -z "$ACCESS_TOKEN_FILE" ] && echo 'GitHub Actions service account' || echo "$who")"
     gcloud projects describe "$PROJECT_ID" --format='value(projectId)' >/dev/null 2>&1 || die "$who cannot see project $PROJECT_ID"
     token >/dev/null
   fi

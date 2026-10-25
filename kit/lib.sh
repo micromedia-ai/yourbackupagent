@@ -136,9 +136,9 @@ bucket_location_for_db() {
 # Multi-region that contains a database location, for off-site buckets.
 multi_region_for() {
   case "$1" in
-    nam5|nam7|us-*|northamerica-*|US) printf 'US' ;;
-    eur3|europe-*|EU) printf 'EU' ;;
-    asia-*|ASIA) printf 'ASIA' ;;
+    nam5|nam7|us-*|northamerica-*|US|us) printf 'US' ;;
+    eur3|europe-*|EU|eu) printf 'EU' ;;
+    asia-*|ASIA|asia) printf 'ASIA' ;;
     *) printf 'US' ;;
   esac
 }

@@ -67,6 +67,8 @@ def gcloud(args):
             print(json.dumps({"name": pos[3][5:], "location": "US"}))
         elif "--raw" in flags and "projectNumber" in " ".join(flags):
             print("123456")
+        elif "value(location)" in " ".join(flags):
+            print("US-EAST1")
         else:
             print(pos[3][5:])
         return 0
@@ -217,6 +219,10 @@ def route(method, url, data):
     if url.endswith(":runAggregationQuery"):
         c = data["structuredAggregationQuery"]["structuredQuery"]["from"][0]["collectionId"]
         return 200, [{"result": {"aggregateFields": {"n": {"integerValue": str(COUNTS[c])}}}}]
+    if os.environ.get("FAKE_NO_FIRESTORE") == "1" and "firestore.googleapis.com" in url:
+        if re.search(r"/projects/[^/]+/databases$", url):
+            return 200, {}
+        return 404, {"error": {"message": "Project or database '(default)' does not exist."}}
     if re.search(r"/projects/[^/]+/databases$", url):
         return 200, {"databases": [{"name": "projects/x/databases/(default)"}, {"name": "projects/x/databases/drill-202601010000"}]}
     if re.search(r"/databases/[^/:]+$", url) and method == "GET":

@@ -132,6 +132,7 @@ expect "the wipe clears the last drill's Auth blocking functions" 'grep -q "bloc
 expect "rebuild labels the drill project as passed through the API" '[ "$(tail -n 1 "$T/labels.log" | jq -r "[.\"drill-of\", .\"drill-data\", .\"drill-run\"] | join(\",\")")" = "demo-app,passed,$(tr A-Z a-z <<<"$ID")" ]' "$T/labels.log"
 expect "rebuild never reads or changes production" '! grep -E "projects/demo-app/|--project[= ]demo-app( |$)|gs://demo-app" "$T/calls.log" | grep -q .' "$T/calls.log"
 expect "rebuild wiped the drill and took old CI owners away" 'grep -q "remove-iam-policy-binding demo-drill --member=serviceAccount:old-ci@other.iam.gserviceaccount.com" "$T/calls.log"'
+expect "the wipe keeps the manager app's drill runner as owner" '! grep -q "remove-iam-policy-binding demo-drill --member=serviceAccount:kit-runner@" "$T/calls.log"'
 expect "users imported with the hash key" '[ "$(jq -c "[.hashAlgorithm, (.users | length)]" "$T/batchCreate.json")" = "[\"SCRYPT\",3]" ]'
 expect "media restored into the drill's default bucket" '[ -f "$T/gcs/demo-drill.firebasestorage.app/products/a.webp" ]'
 expect "placeholder secrets from the inventory, KMS key created" 'grep -q "secrets create RESEND_API_KEY --project demo-drill" "$T/calls.log" && grep -q "kms keys create user-wallets" "$T/calls.log"'

@@ -58,6 +58,8 @@ test('backup.env parsing and editing', () => {
   const s = projectSettings(env);
   assert.deepEqual([s.backupBucket, s.keepMinSets, s.keepDays], ['foundation-next-app-backups', 7, 14]);
   assert.equal(parseEnv(setEnvValue(text, 'KEEP_MIN_SETS', '9')).KEEP_MIN_SETS, '9');
+  assert.equal(s.storageMode, 'full');
+  assert.equal(projectSettings(parseEnv(setEnvValue(text, 'STORAGE_MODE', 'changed'))).storageMode, 'changed');
   assert.equal(parseEnv(setEnvValue(text, 'BACKUP_KEEP_DAYS', '30')).BACKUP_KEEP_DAYS, '30');
   assert.ok(setEnvValue(text, 'BACKUP_KEEP_DAYS', '30').startsWith('# c\n'));
 });

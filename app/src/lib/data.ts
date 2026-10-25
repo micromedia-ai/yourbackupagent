@@ -10,7 +10,7 @@ export type SetSummary = {
 export type BackupSet = SetSummary & { inProject: boolean; inVault: boolean; project: SetSummary | null; vault: SetSummary | null };
 export type Health = { level: 'ok' | 'warn' | 'bad'; text: string; goodCount?: number; newestGood?: string; ageHours?: number };
 export type Project = {
-  projectId: string; label: string; repo: string; kitRef: string; backupBucket: string; keepDays: number; keepMinSets: number;
+  projectId: string; label: string; repo: string; kitRef: string; backupBucket: string; keepDays: number; keepMinSets: number; storageMode?: 'full' | 'changed';
   maxAgeHours: number; offsiteBucket: string; offsiteKeepDays: number; vaultProject: string; drillProject: string; drillWorkflow: string;
   health: Health; errors: string[]; refreshedAt?: any; totals?: { sets: number; inProject: number; inVault: number; bytes: number };
   prunePreview?: { id: string; status: string; why: string }[];

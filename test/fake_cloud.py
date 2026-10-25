@@ -5,11 +5,14 @@ Buckets are folders under $FAKE_GCS; Google APIs answer canned JSON shaped
 like the real ones. Every call is appended to $FAKE_GCS/../calls.log so the
 tests can check what the script did (and did not) touch.
 """
+import base64
+import hashlib
 import json
 import os
 import re
 import shutil
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(os.environ["FAKE_GCS"])
@@ -79,12 +82,27 @@ def gcloud(args):
         src, dst = local(pos[2]), local(pos[3])
         for f in files_under(src):
             t = dst / f.relative_to(src)
+            if "--no-clobber" in flags and t.exists():
+                continue
             t.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy(f, t)
             print(f"Copying {pos[2]}/{f.relative_to(src)} to {pos[3]}/{f.relative_to(src)}", file=sys.stderr)
         return 0
     if pos[:3] == ["storage", "objects", "list"]:
         p = local(pos[3].removesuffix("/**"))
+        if "--format=json" in flags:
+            found = files_under(p)
+            if not found:
+                print("ERROR: (gcloud.storage.objects.list) One or more URLs matched no objects.", file=sys.stderr)
+                return 1
+            out = []
+            for f in found:
+                out.append({"name": str(f.relative_to(ROOT)).split("/", 1)[1],
+                             "md5Hash": base64.b64encode(hashlib.md5(f.read_bytes()).digest()).decode(),
+                             "size": str(f.stat().st_size),
+                             "timeCreated": datetime.fromtimestamp(f.stat().st_mtime, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")})
+            print(json.dumps(out))
+            return 0
         for f in files_under(p):
             print(str(f.relative_to(ROOT)).split("/", 1)[1])
         return 0
@@ -132,6 +150,13 @@ def gcloud(args):
                 else:
                     target.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy(it, target)
+        return 0
+    if pos[:2] == ["storage", "rm"] and "-I" in args:
+        for line in sys.stdin.read().split("\n"):
+            if line.strip():
+                f = local(line.strip())
+                if f.is_file():
+                    f.unlink()
         return 0
     if pos[:2] == ["storage", "rm"]:
         p = local(pos[2].removesuffix("/**"))

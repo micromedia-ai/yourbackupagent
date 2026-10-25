@@ -64,6 +64,13 @@ export async function listSets(bucket, known = new Map()) {
   return out.sort((a, b) => (a.id < b.id ? 1 : -1));
 }
 
+// storeBytes(bucket): size of the shared file store (files/) that sets in
+// changed-files mode (STORAGE_MODE=changed) refer to.
+export async function storeBytes(bucket) {
+  const [files] = await storage.bucket(bucket).getFiles({ prefix: 'files/', autoPaginate: true });
+  return files.reduce((a, f) => a + Number(f.metadata.size || 0), 0);
+}
+
 export async function deleteSet(bucket, id) {
   if (!RUN_ID.test(id)) throw new Error(`not a backup id: ${id}`);
   await storage.bucket(bucket).deleteFiles({ prefix: `runs/${id}/`, force: true });

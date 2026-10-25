@@ -14,6 +14,7 @@ export function Settings() {
   const [min, setMin] = useState(7);
   const [watch, setWatch] = useState({ set: 2, total: 20 });
   const [perProject, setPerProject] = useState<Record<string, number>>({});
+  const [modes, setModes] = useState<Record<string, 'full' | 'changed'>>({});
   const { busy, run, banner } = useBusy();
   const { rows: requests } = useRequests();
   const notify = useDoc<{ health?: boolean; recoveries?: boolean; drills?: boolean; weekly?: boolean; recipients?: string[] }>('config/notify');
@@ -86,8 +87,31 @@ export function Settings() {
         <button className="btn" disabled={!!busy} onClick={() => run('save', async () => { await call('saveSettings', { defaultMinSets: min }); return { text: 'Saved.' }; })}>Save</button>
       </section>
       <section className="panel">
+        <h4>Media copies</h4>
+        <p className="small"><b>Full</b>: every nightly set copies every media file. <b>Changed only</b>: a set copies just the files that are new or changed since the last one, into a shared store in the backup bucket; every set still restores in full, and files no set needs any more are deleted after the nightly prune. Kept in each project's <code>backup-kit/backup.env</code> (<code>STORAGE_MODE</code>), so a change opens a pull request there.</p>
+        <div className="tscroll"><table>
+          <thead><tr><th>Project</th><th>Now</th><th>Change to</th><th></th></tr></thead>
+          <tbody>{(projects || []).map((p) => {
+            const now = p.storageMode || 'full';
+            const want = modes[p.projectId] ?? now;
+            return (
+              <tr key={p.projectId}>
+                <td>{p.label}</td><td>{now === 'changed' ? 'Changed only' : 'Full'}</td>
+                <td><select id={`mode-${p.projectId}`} value={want} onChange={(e) => setModes({ ...modes, [p.projectId]: e.target.value as 'full' | 'changed' })}>
+                  <option value="full">Full</option><option value="changed">Changed only</option>
+                </select></td>
+                <td><button className="btn small" disabled={!!busy || want === now} onClick={() => run('mode', async () => {
+                  const r = await call<{ pr: string }>('setStorageMode', { project: p.projectId, mode: want });
+                  return { text: 'Pull request opened. Merge it to apply from the next backup.', link: r.pr };
+                })}>Open pull request</button></td>
+              </tr>
+            );
+          })}</tbody>
+        </table></div>
+      </section>
+      <section className="panel">
         <h4>Backup size watch</h4>
-        <p className="small">Every set is a full copy (database and all media), so storage grows with the project. A project past either level shows as needing attention and, with email alerts on, you get an email. 0 turns a level off.</p>
+        <p className="small">A full set copies the database and all media, so storage grows with the project (changed-only media copies keep it down; the shared store counts in the total). A project past either level shows as needing attention and, with email alerts on, you get an email. 0 turns a level off.</p>
         <div className="row wrap">
           <label>One set, newest (GB) <input type="number" id="watch-set" min={0} step={0.5} value={watch.set} onChange={(e) => setWatch({ ...watch, set: Number(e.target.value) })} /></label>
           <label>All sets of a project, here and in the vault (GB) <input type="number" id="watch-total" min={0} step={1} value={watch.total} onChange={(e) => setWatch({ ...watch, total: Number(e.target.value) })} /></label>

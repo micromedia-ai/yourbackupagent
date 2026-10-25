@@ -14,7 +14,7 @@ import { onDocumentWritten } from 'firebase-functions/v2/firestore';
 import { defineSecret, defineString } from 'firebase-functions/params';
 import { createHash, randomBytes } from 'node:crypto';
 import { github } from './lib/github.js';
-import { listSets, deleteSet, drillLabels, runJob } from './lib/cloud.js';
+import { listSets, deleteSet, drillLabels, runJob, storeBytes } from './lib/cloud.js';
 import { parseEnv, projectSettings, setEnvValue } from './lib/env.js';
 import { canDelete, health, prunePlan, RUN_ID } from './lib/sets.js';
 import { lockBlocks, endsLock, LOCK_HOURS } from './lib/drilllock.js';
@@ -132,14 +132,17 @@ async function refreshProject(gh, repo, s = null) {
   for (const s of sets) batch.set(ref.collection('sets').doc(s.id), s);
   if (inProject && inVault) for (const k of known) if (!ids.has(k.id)) batch.delete(ref.collection('sets').doc(k.id));
   const projectSetsOnly = (inProject || []);
-  const totalBytes = sets.reduce((a, x) => a + x.bytes, 0);
+  // The shared file store (changed-files mode) counts once per bucket.
+  const store = await Promise.all([p.backupBucket, p.offsiteBucket].filter(Boolean).map((b) => storeBytes(b).catch((e) => { errors.push(`gs://${b}/files: ${e.message}`); return 0; })));
+  const storeTotal = store.reduce((a, x) => a + x, 0);
+  const totalBytes = sets.reduce((a, x) => a + x.bytes, 0) + storeTotal;
   const h = inProject
     ? health(projectSetsOnly, { maxAgeHours: p.maxAgeHours, offsite: Boolean(p.offsiteBucket), maxSetBytes: (s.sizeWarnSetGB || 0) * 1e9, maxTotalBytes: (s.sizeWarnTotalGB || 0) * 1e9, totalBytes })
     : { level: 'bad', text: 'Cannot read the backup bucket' };
   const { envText, ...rest } = p;
   batch.set(ref, {
     ...rest, envText, health: h, errors, refreshedAt: FieldValue.serverTimestamp(),
-    totals: { sets: sets.length, inProject: projectSetsOnly.length, inVault: (inVault || []).length, bytes: totalBytes },
+    totals: { sets: sets.length, inProject: projectSetsOnly.length, inVault: (inVault || []).length, bytes: totalBytes, storeBytes: storeTotal },
     prunePreview: inProject ? prunePlan(projectSetsOnly, { keepMin: p.keepMinSets, keepDays: p.keepDays }) : [],
   }, { merge: false });
   await batch.commit();
@@ -533,6 +536,35 @@ export const setMinSets = onCall(opts, async (req) => {
       title: `Backups: keep at least ${n} good sets`,
       body: `Sets \`KEEP_MIN_SETS=${n}\` in \`backup-kit/backup.env\`. The newest ${n} good backup sets of ${p.projectId} are then never deleted, by the nightly prune or by the manager app.\n\nOpened from the YourBackupAgent Manager by ${by}.`,
       files: [{ path: 'backup-kit/backup.env', content: setEnvValue(cur.text, 'KEEP_MIN_SETS', String(n)) }],
+    });
+    await logEnd(ref, 'succeeded', `pull request #${pr.number} (takes effect when merged)`, { link: pr.html_url });
+    return { pr: pr.html_url };
+  } catch (e) {
+    await logEnd(ref, 'failed', e.message);
+    throw new HttpsError('internal', e.message);
+  }
+});
+
+// Media copies for one project: a pull request setting STORAGE_MODE in its
+// backup.env (full = every set copies every file; changed = only new or
+// changed files, into a shared store the sets refer to).
+export const setStorageMode = onCall(opts, async (req) => {
+  const by = await requireUser(req);
+  const { project, mode } = req.data || {};
+  if (mode !== 'full' && mode !== 'changed') throw new HttpsError('invalid-argument', 'mode must be full or changed');
+  const p = await projectDoc(project);
+  const ref = await logStart(by, `set media copies to ${mode}`, { project: p.projectId });
+  try {
+    const gh = github(GITHUB_TOKEN.value());
+    const cur = await gh.fileText(p.repo, 'backup-kit/backup.env');
+    const what = mode === 'changed' ? 'only new or changed media files' : 'every media file';
+    const pr = await gh.pullRequest(p.repo, {
+      branch: 'yourbackupagent/storage-mode', message: `Backups: copy ${what} each night`,
+      title: `Backups: copy ${what} each night`,
+      body: `Sets \`STORAGE_MODE=${mode}\` in \`backup-kit/backup.env\`. ${mode === 'changed'
+        ? 'Each nightly set copies only the media files that are new or changed since the last one, into a shared store in the backup bucket (files/); every set still restores in full. Needs kit v1.5 or later. Files no set needs any more are deleted after the nightly prune.'
+        : 'Each nightly set holds a full copy of every media file again. The shared store (files/) stays until the sets that refer to it are pruned.'}\n\nOpened from the YourBackupAgent Manager by ${by}.`,
+      files: [{ path: 'backup-kit/backup.env', content: setEnvValue(cur.text, 'STORAGE_MODE', mode) }],
     });
     await logEnd(ref, 'succeeded', `pull request #${pr.number} (takes effect when merged)`, { link: pr.html_url });
     return { pr: pr.html_url };

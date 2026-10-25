@@ -39,10 +39,20 @@ owned by the user dagangilat".
 |---|---|
 | `firestore/<database>/` | Managed export of every Firestore database, at one exact moment (point-in-time recovery makes the export and the counts read the same minute) |
 | `storage/<bucket>/` | Every file of the Firebase Storage bucket(s) |
+| `storage/<bucket>.index.json` | Instead of `storage/<bucket>/` when `STORAGE_MODE=changed`: every file of that night and where its copy is in the shared store |
 | `auth/users.json`, `auth/hash-config.json` | Every Auth user (uid, email, providers, custom claims, password hashes) and the project's password hash key |
 | `rtdb/<instance>.json` | Realtime Database contents, when there is one |
 | `config/*.json` | Deployed rules, indexes, database settings, Auth settings and providers, Hosting sites and domains, web apps, functions, scheduled jobs, secret **names**, KMS key names, buckets, IAM, enabled APIs |
 | `manifest.json` | Written last: status, each step, and the counts the restore is checked against |
+
+With `STORAGE_MODE=changed`, media files are kept once in a shared store
+next to the sets, `gs://<project>-backups/files/<bucket>/` (`o/<name>` is
+the first copy of a file, `v/<md5>/<name>` a later different content), and
+each set copies only what is new or changed since the last one. Nothing in
+the store is ever overwritten, so the off-site copy still needs only
+create access. Every set restores in full; `prune` (after each good run,
+and `prune --vault`) deletes store files that no remaining set refers to,
+once they are 2 days old. An archive always holds full copies.
 
 A run without `manifest.json` is incomplete. `auth/` holds password hashes
 together with their key: treat every backup bucket like a password database.

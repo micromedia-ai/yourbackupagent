@@ -1523,7 +1523,7 @@ wipe_drill() {
   for f in $("${GV[@]}" storage buckets list --project "$DRILL_PROJECT" --format='value(name)' 2>/dev/null); do
     case "$f" in gcf-*|*cloudbuild*|*artifacts*) continue ;; esac
     "${GV[@]}" storage objects list "gs://$f/**" --limit=1 --format='value(name)' 2>/dev/null | grep -q . \
-      && run "${GV[@]}" storage rm "gs://$f/**" --quiet >/dev/null
+      && qrun "${GV[@]}" storage rm "gs://$f/**" --quiet
   done
   for n in $(seq 1 200); do  # 1000 users per call; the cap stops a runaway loop
     uids="$(dapi GET "https://identitytoolkit.googleapis.com/v1/projects/$DRILL_PROJECT/accounts:batchGet?maxResults=1000" 2>/dev/null | jq -c '[.users[]?.localId]')" || break

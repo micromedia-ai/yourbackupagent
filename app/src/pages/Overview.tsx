@@ -75,19 +75,6 @@ export function Kpis({ days = 30 }: { days?: number }) {
   );
 }
 
-function Attention({ projects }: { projects: Project[] }) {
-  const bad = projects.filter((p) => p.health && p.health.level !== 'ok');
-  if (!bad.length) return null;
-  return (
-    <div className="attention" role="status">
-      <b>Needs attention</b>
-      {bad.map((p) => (
-        <a key={p.projectId} {...link(`/projects/${encodeURIComponent(p.projectId)}`)}><Pill tone={statusTone(p.health.level)}>{p.label}</Pill> {p.health.text}</a>
-      ))}
-    </div>
-  );
-}
-
 export function Overview() {
   const { rows: projects, error } = useProjects();
   const sets = useAllSets();
@@ -102,7 +89,6 @@ export function Overview() {
         <div className="row"><RefreshButton /></div>
       </div>
       {error && <p className="banner bad">{error}</p>}
-      {projects && <Attention projects={projects} />}
       <Kpis />
       <DrillSlot />
       <div className="cards">

@@ -241,6 +241,8 @@ expect "changed mode: prune deletes store files no set refers to, keeps the rest
   '[ $? -eq 0 ] && [ ! -f "$CS/o/products/a.webp" ] && [ ! -f "$CS/o/products/b.webp" ] && [ -f "$CS/o/products/c.webp" ] && [ -f "$CS"/v/*/products/a.webp ] && [ -f "$CS/o/fresh/x.webp" ]' "$T/out"
 expect "changed mode: the newest set still restores after the cleanup" \
   '[ "$(jq -r ".storage[\"$SB\"].objects" "$T/gcs/ch-backups/runs/$C3/manifest.json")" = 2 ] && chk drill --here --run "$C3" --yes && grep -q "DRILL PASSED" "$T/out"' "$T/out"
+chk cleanup --drill --yes
+expect "cleanup --drill empties the drill bucket without listing file names" '[ $? -eq 0 ] && [ -z "$(find "$DB" -type f)" ] && ! grep -q "^Removing" "$T/out"' "$T/out"
 printf 'STORAGE_MODE=some\n' >>"$T/ch.env"; chk status
 expect "a wrong STORAGE_MODE is refused" '[ $? -ne 0 ] && grep -q "STORAGE_MODE must be full or changed" "$T/out"' "$T/out"
 

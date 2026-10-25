@@ -116,7 +116,22 @@ async function main() {
     check('refresh reads the project from its repository backup.env', true);
     check('health is shown (newest run failed -> warning)', (await card.textContent()).includes('The newest run failed'), await card.textContent());
     check('drill slot shows who holds the drill project', await page.getByText('holds a drill of other-app').count() > 0);
-    check('overview: 5 headline numbers, the attention bar and the nightly grid', await page.locator('.kpi').count() === 5 && await page.locator('.attention', { hasText: 'Foundation Next' }).count() === 1 && await page.locator('.sgrid .cell.failed').count() >= 1);
+    check('overview: 5 headline numbers and the nightly grid', await page.locator('.kpi').count() === 5 && await page.locator('.sgrid .cell.failed').count() >= 1);
+    // Alerts live behind the bell; a hidden one stays hidden until its text changes.
+    const badge = async () => (await page.locator('.bell-n').count()) ? Number(await page.locator('.bell-n').textContent()) : 0;
+    const before = await badge();
+    await page.locator('#bell').click();
+    const listed = await page.locator('.bell-item', { hasText: 'Foundation Next' }).count();
+    await page.locator('.bell-item', { hasText: 'Foundation Next' }).getByRole('button', { name: 'Hide' }).click();
+    const after = await badge();
+    await page.reload();
+    await page.locator('.kpi').first().waitFor({ timeout: 30000 });
+    const afterReload = await badge();
+    await page.locator('#bell').click();
+    await page.getByRole('button', { name: /Show 1 hidden/ }).click();
+    check('the bell counts alerts, lists Foundation Next, and Hide keeps it hidden across a reload until shown again',
+      before >= 1 && listed === 1 && after === before - 1 && afterReload === before - 1 && await badge() === before, JSON.stringify({ before, listed, after, afterReload }));
+    await page.keyboard.press('Escape');
     await page.screenshot({ path: `${SHOTS}/1-overview.png`, fullPage: true });
 
     await card.click();
@@ -316,6 +331,10 @@ async function main() {
     check('phone: project page shows the sets', await pp.locator('table.sets tbody tr').count() > 0);
     const wide = await pp.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
     check('phone: no sideways page scroll', !wide);
+    await pp.locator('#bell').click();
+    const panel = await pp.locator('.bell-panel').boundingBox();
+    const vw = await pp.evaluate(() => window.innerWidth);
+    check('phone: the bell is there and its panel fits the screen', !!panel && panel.x >= 0 && panel.x + panel.width <= vw + 1, JSON.stringify({ panel, vw }));
 
     // Invite only: a stranger asks, the owner approves, the stranger gets in.
     const other = await browser.newContext();

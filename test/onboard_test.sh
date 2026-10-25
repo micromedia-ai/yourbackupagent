@@ -45,7 +45,7 @@ cat >"$T/setup.sh" <<'S'
 echo "app $* in $(basename "$PWD")" >>"$LOG"
 S
 chmod +x "$T/bin/"* "$T/seed/backup-kit/backup.sh" "$T/setup.sh"
-printf 'KIT_REF=v1.1\nPROJECT_ID=demo-p\nCI_SA=\nVAULT_ACCOUNT=dagan.gilat@gmail.com\n' >"$T/seed/backup-kit/backup.env"
+printf 'KIT_REF=v1.1\nPROJECT_ID=demo-p\nOFFSITE_BUCKET=yba-demo\nCI_SA=\nVAULT_ACCOUNT=dagan.gilat@gmail.com\n' >"$T/seed/backup-kit/backup.env"
 printf 'with:\n  credentials_json: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}\n' >"$T/seed/.github/workflows/backup.yml"
 git init -q --bare "$T/origin.git"
 (cd "$T/seed" && git init -q -b main && git add -A && git -c user.email=t@t -c user.name=t commit -q -m seed \
@@ -58,6 +58,9 @@ order="$(grep -E '^(kit|app) ' "$LOG" | cut -d' ' -f1-2 | tr '\n' ' ')"
 [ "$order" = "kit setup kit protect kit offsite kit run app grant " ] || fail "step order: $order"; ok "steps in order"
 grep -q '^kit setup as owner@x.com' "$LOG" || fail "kit not run as the project owner"; ok "kit runs as the project owner"
 grep -q '^app grant demo-p in demo' "$LOG" || fail "grant not run from the repo"; ok "grant from the repository"
+grep -q '^gcloud storage buckets add-iam-policy-binding gs://yba-demo --member user:owner@x.com --role roles/storage.objectCreator --account dagan.gilat@gmail.com' "$LOG" || fail "owner cannot add to the vault bucket"
+grep -q '^gcloud storage buckets add-iam-policy-binding gs://yba-demo --member user:owner@x.com --role roles/storage.objectViewer --account dagan.gilat@gmail.com' "$LOG" || fail "owner cannot read the vault bucket"
+ok "project owner may copy into the vault bucket"
 grep -q '^gcloud iam service-accounts create yourbackupagent-ci --project demo-p' "$LOG" || fail "no service account"; ok "service account made"
 grep -q '^gh secret set YOURBACKUPAGENT_SA_KEY --repo dagangilat/demo' "$LOG" || fail "no secret"; ok "key stored as a secret"
 git --git-dir="$T/origin.git" show yourbackupagent/protect:backup-kit/backup.env | grep -qx 'CI_SA=yourbackupagent-ci@demo-p.iam.gserviceaccount.com' || fail "CI_SA not pushed"; ok "CI_SA committed and pushed"

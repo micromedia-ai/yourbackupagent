@@ -465,7 +465,8 @@ export const logVault = onCall(opts, async (req) => {
   return { ok: true };
 });
 
-// Repositories that could be protected: have firebase.json, no backup-kit yet.
+// Repositories that could be protected: have firebase.json (at the root or in
+// app/) or already have the kit.
 export const repos = onCall(opts, async (req) => {
   await requireUser(req);
   const gh = github(GITHUB_TOKEN.value());
@@ -474,8 +475,10 @@ export const repos = onCall(opts, async (req) => {
   const out = [];
   for (const r of all.slice(0, 60)) {
     const [fb, kit] = await Promise.all([gh.fileText(r.full_name, 'firebase.json'), gh.fileText(r.full_name, 'backup-kit/backup.env')]);
-    if (!fb) continue;
-    const rc = await gh.fileText(r.full_name, '.firebaserc');
+    // Some repos keep the Firebase app in app/ (limorgilat.com); a repo that has the kit counts too.
+    const sub = fb ? null : await gh.fileText(r.full_name, 'app/firebase.json');
+    if (!fb && !sub && !kit) continue;
+    const rc = (await gh.fileText(r.full_name, '.firebaserc')) || (sub ? await gh.fileText(r.full_name, 'app/.firebaserc') : null);
     out.push({ repo: r.full_name, private: r.private, pushedAt: r.pushed_at, firebaseProject: rc ? firebaseProject(rc.text) : '', hasKit: Boolean(kit), managed: s.repos.includes(r.full_name) });
   }
   return { repos: out };
@@ -489,7 +492,7 @@ export const protect = onCall(opts, async (req) => {
   const s = await settings();
   const ref = await logStart(by, 'protect repository', { repo });
   try {
-    const rc = await gh.fileText(repo, '.firebaserc');
+    const rc = (await gh.fileText(repo, '.firebaserc')) || (await gh.fileText(repo, 'app/.firebaserc'));
     const projectId = givenId || (rc ? firebaseProject(rc.text) : '');
     if (!/^[a-z][a-z0-9-]{4,28}[a-z0-9]$/.test(projectId)) throw new Error(`no Firebase project id found in ${repo}/.firebaserc; type it in`);
     const existing = await gh.fileText(repo, 'backup-kit/backup.env');

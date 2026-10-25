@@ -1282,6 +1282,11 @@ wipe_drill() {
       sleep 15; : "$f"
     done
   fi
+  # The last drill's blocking functions (beforeUserCreated and the like) stay
+  # registered in Auth after their functions are gone, and every sign-in then
+  # fails with auth/internal-error. The next deploy registers its own.
+  change vault PATCH "https://identitytoolkit.googleapis.com/admin/v2/projects/$DRILL_PROJECT/config?updateMask=blockingFunctions" \
+    '{"blockingFunctions":{}}' "$DRILL_PROJECT" >/dev/null 2>&1 || warn "could not clear Auth blocking functions in $DRILL_PROJECT"
   for rg in $REGIONS us-central1; do
     for j in $(dapi GET "https://cloudscheduler.googleapis.com/v1/projects/$DRILL_PROJECT/locations/$rg/jobs" 2>/dev/null | jq -r '.jobs[]?.name'); do
       change vault DELETE "https://cloudscheduler.googleapis.com/v1/$j" "" "$DRILL_PROJECT" >/dev/null || true

@@ -232,8 +232,8 @@ async function main() {
     const envFile = tree && tree.body.tree.find((f) => f.path === 'backup-kit/backup.env');
     check('the pull request carries the kit files, filled in', envFile && /PROJECT_ID=yourcontentcreator-f7ef5/.test(envFile.content) && /KEEP_MIN_SETS=7/.test(envFile.content) && /OFFSITE_BUCKET=yourbackupagent-yourcontentcreator/.test(envFile.content)
       && tree.body.tree.some((f) => f.path === '.github/workflows/backup.yml' && f.content.includes('secrets.FIREBASE_SERVICE_ACCOUNT_YCC') && f.content.includes('yourbackupagent@v1.1')));
-    await page.getByText('Or on your Mac').click();
-    check('protect still shows the one Mac command to finish', (await page.locator('.code pre').allTextContents()).some((t) => t.includes('./onboard.sh dagangilat/your-content-creator')));
+    await page.getByText('Or on your computer').click();
+    check('protect still shows the one computer command to finish', (await page.locator('.code pre').allTextContents()).some((t) => t.includes('./onboard.sh dagangilat/your-content-creator')));
 
     // "Set it up here": a browser sign-in as the project owner (and the vault owner).
     const jobsBefore = fakes.calls.filter((c) => c.path.endsWith('/jobs/kit-runner:run')).length;

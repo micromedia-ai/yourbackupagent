@@ -524,7 +524,7 @@ export const protect = onCall(opts, async (req) => {
 });
 
 // "Set it up here" on the Protect page: the one-time setup of a repository's
-// project (what onboard.sh does on a Mac), done by the kit runner with the
+// project (what onboard.sh does on your computer), done by the kit runner with the
 // project owner's short-lived Google sign-in from the browser, plus the vault
 // owner's when that is another account. Checked here, kept in onboard/<id>
 // (server only, read once and deleted by the runner), expire within the hour.
@@ -674,9 +674,9 @@ function protectBody(repo, projectId, kitRef, secret, existing) {
     '',
     '- `backup-kit/backup.sh`: runs the kit version pinned in `backup-kit/backup.env`',
     existing ? '- `backup-kit/backup.env` already exists and is left as it is' : '- `backup-kit/backup.env`: this project\'s settings (names only, no secrets). Check `CI_SA` and the bucket names.',
-    `- \`.github/workflows/backup.yml\`: back up at 02:00 UTC every day, restore drill on Sundays (sign-in secret: \`${secret || 'YOURBACKUPAGENT_SA_KEY, made by onboard.sh'}\`)`,
+    `- \`.github/workflows/backup.yml\`: back up at 02:00 UTC every day, restore drill on Sundays (signs in to Google ${secret ? `with the secret \`${secret}\`` : 'with the set-up below'})`,
     '',
-    'Before merging: run the one-time setup on a Mac, from a checkout of dagangilat/yourbackupagent: `./onboard.sh ' + repo + '` (it logs in, makes the GitHub key if needed, sets up the buckets and protection, takes the first backup and offers a rebuild drill). Otherwise the first nightly backup fails. A `rebuild-drill.yml` that deploys this site into the drill project is project-specific and comes separately (template: `templates/rebuild-drill.yml` in the kit).',
+    'Before merging, set it up once, either in the YourBackupAgent app (Protect, then **Set it up here** with a Google sign-in; no stored key) or on your own computer from a checkout of dagangilat/yourbackupagent: `./onboard.sh ' + repo + '`. Both make the backup account, the buckets and protection, and take the first backup. Otherwise the first nightly backup fails. A `rebuild-drill.yml` that deploys this site into the drill project is project-specific and comes separately (template: `templates/rebuild-drill.yml` in the kit).',
     '',
     'Opened from the YourBackupAgent Manager.',
   ].join('\n');

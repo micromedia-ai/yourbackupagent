@@ -132,6 +132,19 @@ async function main() {
     check('the bell counts alerts, lists Foundation Next, and Hide keeps it hidden across a reload until shown again',
       before >= 1 && listed === 1 && after === before - 1 && afterReload === before - 1 && await badge() === before, JSON.stringify({ before, listed, after, afterReload }));
     await page.keyboard.press('Escape');
+    // A size-watch note keeps the project Healthy on its card and shows under the bell only.
+    const fnDoc = 'http://127.0.0.1:8086/v1/projects/demo-yba/databases/(default)/documents/projects/demo-fn';
+    const savedHealth = (await (await fetch(fnDoc, { headers: { authorization: 'Bearer owner' } })).json()).fields.health;
+    const patchHealth = (health) => fetch(`${fnDoc}?updateMask.fieldPaths=health`, { method: 'PATCH', headers: { authorization: 'Bearer owner', 'content-type': 'application/json' }, body: JSON.stringify({ fields: { health } }) });
+    await patchHealth({ mapValue: { fields: { level: { stringValue: 'ok' }, text: { stringValue: 'Healthy' }, notes: { arrayValue: { values: [{ stringValue: 'Backups take 94 GB (watch level 20 GB)' }] } } } } });
+    await page.locator('.pcard', { hasText: 'Foundation Next' }).getByText('Healthy').waitFor({ timeout: 30000 });
+    const cardText = await card.textContent();
+    await page.locator('#bell').click();
+    const noteListed = await page.locator('.bell-item', { hasText: 'watch level' }).count();
+    check('a size-watch note: the card says Healthy with no size pill, the bell lists it', !cardText.includes('watch level') && noteListed === 1 && await page.locator('.kpi', { hasText: '1 of 1' }).count() === 1, JSON.stringify({ cardText, noteListed }));
+    await page.keyboard.press('Escape');
+    await patchHealth(savedHealth);
+    await page.locator('.pcard', { hasText: 'The newest run failed' }).waitFor({ timeout: 30000 });
     await page.screenshot({ path: `${SHOTS}/1-overview.png`, fullPage: true });
 
     await card.click();

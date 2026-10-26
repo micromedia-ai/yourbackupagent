@@ -3,7 +3,8 @@ import { useProjects } from '../lib/data';
 import { link } from '../lib/route';
 import { Pill, statusTone } from './ui';
 
-// Alerts (projects that need attention) behind a bell in the top bar. A
+// Alerts (projects that need attention, and size-watch notes on healthy
+// ones) behind a bell in the top bar. A
 // hidden alert stays hidden in this browser until its text changes, so a new
 // or different problem shows again.
 const KEY = 'yba.hiddenAlerts';
@@ -29,11 +30,13 @@ export function Bell() {
     return () => { document.removeEventListener('mousedown', close); document.removeEventListener('keydown', close); };
   }, [open]);
 
-  const alerts = (projects || []).filter((p) => p.health && p.health.level !== 'ok')
-    .map((p) => ({ p, key: `${p.projectId}|${p.health.text}` }));
+  const alerts = (projects || []).filter((p) => p.health).flatMap((p) => [
+    ...(p.health.level !== 'ok' ? [{ p, level: p.health.level, text: p.health.text }] : []),
+    ...(p.health.notes || []).map((text) => ({ p, level: 'warn' as const, text })),
+  ]).map((a) => ({ ...a, key: `${a.p.projectId}|${a.text}` }));
   const shown = alerts.filter((a) => !hidden.includes(a.key));
   const nHidden = alerts.length - shown.length;
-  const worst = shown.some((a) => a.p.health.level === 'bad') ? 'bad' : 'warn';
+  const worst = shown.some((a) => a.level === 'bad') ? 'bad' : 'warn';
   const hide = (k: string[]) => {
     // Forget hidden alerts that no longer exist, so the list does not grow.
     const next = [...new Set([...hidden, ...k])].filter((h) => alerts.some((a) => a.key === h));
@@ -54,11 +57,11 @@ export function Bell() {
             {shown.length > 1 && <button className="linkish small" onClick={() => hide(shown.map((a) => a.key))}>Hide all</button>}
           </div>
           {shown.length === 0 && <p className="small muted">Nothing needs attention{nHidden ? '' : ': every project is healthy'}.</p>}
-          {shown.map(({ p, key }) => (
+          {shown.map(({ p, key, level, text }) => (
             <div key={key} className="bell-item">
               <a {...link(`/projects/${encodeURIComponent(p.projectId)}`)} onClick={() => setOpen(false)}>
-                <Pill tone={statusTone(p.health.level)}>{p.label}</Pill>
-                <span className="small">{p.health.text}</span>
+                <Pill tone={statusTone(level)}>{p.label}</Pill>
+                <span className="small">{text}</span>
               </a>
               <button className="btn ghost small" aria-label={`Hide the alert for ${p.label}`} onClick={() => hide([key])}>Hide</button>
             </div>

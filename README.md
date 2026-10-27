@@ -119,6 +119,11 @@ Either runs every step below in order and can run again. By hand:
    (in the Protect pull request, or "Add site drill" on a project's page);
    edit it when the project deploys in a special way (Foundation Next's
    batched functions deploy is in `templates/rebuild-drill.yml`).
+   What a drill checks ("parts": data, web, api, service, mobile) is detected
+   from the repo (`app/functions/lib/parts.js`) or set with `DRILL_PARTS` and
+   `HEALTH_PATH` in `backup.env`; the api part requires every function
+   production runs to be active in the drill. "Update site drill" remakes an
+   app-made workflow with the current checks.
 4. Run the one-time setup below as a project owner, then a rebuild drill.
 
 ## One-time setup (copy-paste)

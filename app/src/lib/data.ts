@@ -12,6 +12,7 @@ export type Health = { level: 'ok' | 'warn' | 'bad'; text: string; notes?: strin
 export type Project = {
   projectId: string; label: string; repo: string; kitRef: string; backupBucket: string; keepDays: number; keepMinSets: number; storageMode?: 'full' | 'changed';
   maxAgeHours: number; offsiteBucket: string; offsiteKeepDays: number; vaultProject: string; drillProject: string; drillWorkflow: string; siteDrill?: boolean;
+  parts?: string[]; partsManual?: boolean; detectedParts?: string[] | null; partsWhy?: Record<string, string> | null; drillParts?: string; healthPath?: string;
   health: Health; errors: string[]; refreshedAt?: any; totals?: { sets: number; inProject: number; inVault: number; bytes: number };
   prunePreview?: { id: string; status: string; why: string }[];
 };

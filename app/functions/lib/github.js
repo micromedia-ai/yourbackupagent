@@ -42,6 +42,12 @@ export function github(token, fetchImpl = fetch) {
     call,
     fileText,
     repo: (repo) => call('GET', `/repos/${repo}`),
+    // Every path on the default branch (files and folders); [] for an empty repo.
+    async paths(repo) {
+      const { default_branch: b } = await call('GET', `/repos/${repo}`);
+      const t = await call('GET', `/repos/${repo}/git/trees/${encodeURIComponent(b)}?recursive=1`).catch((e) => (e.status === 404 || e.status === 409 ? { tree: [] } : Promise.reject(e)));
+      return (t.tree || []).map((x) => x.path);
+    },
     // Every repository the token can see, owned by the user.
     async repos() {
       const out = [];

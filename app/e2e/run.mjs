@@ -159,6 +159,7 @@ async function main() {
     const siteTree = fakes.calls.filter((c) => c.path === '/repos/dagangilat/foundation-next/git/trees').pop();
     const siteFile = siteTree && siteTree.body.tree.find((f) => f.path === '.github/workflows/rebuild-drill.yml');
     check('a project without a site drill gets one by pull request', Boolean(siteFile) && siteFile.content.includes('PRODUCTION: demo-fn') && siteTree.body.tree.length === 1, JSON.stringify(siteTree?.body.tree.map((f) => f.path)));
+    check('the project page shows the detected drill parts (archived Flutter app skipped)', await page.getByText('Rebuild drills check: data, web, api').count() === 1 && await page.getByText('detected from the repo', { exact: false }).count() > 0);
     await page.screenshot({ path: `${SHOTS}/2-project.png`, fullPage: true });
 
     // Delete the two oldest good sets with min 3: allowed for one... check refusal first.
@@ -298,6 +299,13 @@ async function main() {
     await page.getByText('Pull request opened. Merge it, then refresh, to see the new name.').waitFor({ timeout: 30000 });
     const nameTree = fakes.calls.filter((c) => c.path === '/repos/dagangilat/foundation-next/git/trees').pop();
     check('renaming a project opens a pull request with PROJECT_LABEL="Foundation Brand"', nameTree && /PROJECT_LABEL="Foundation Brand"/.test(nameTree.body.tree[0].content) && /STORAGE_MODE=changed/.test(nameTree.body.tree[0].content));
+    await page.locator('#part-demo-fn-service').check();
+    await page.locator('#health-demo-fn').fill('/api/health');
+    await page.locator('tr', { has: page.locator('#health-demo-fn') }).getByRole('button', { name: 'Open pull request' }).click();
+    await page.getByText(/Pull request opened\. Merge it, then refresh\. Older site drill/).waitFor({ timeout: 30000 });
+    const partsTree = fakes.calls.filter((c) => c.path === '/repos/dagangilat/foundation-next/git/trees').pop();
+    const partsEnv = partsTree && partsTree.body.tree[0].content;
+    check('changing drill parts opens a pull request with DRILL_PARTS="web api service" and HEALTH_PATH', /\nDRILL_PARTS="web api service"\n/.test(partsEnv) && /\nHEALTH_PATH=\/api\/health\n/.test(partsEnv) && /PROJECT_LABEL="Foundation Brand"/.test(partsEnv), partsEnv);
     // Email alerts.
     const sent = () => fakes.emails.map((e) => e.subject);
     await page.getByRole('button', { name: 'Send me a test' }).click();

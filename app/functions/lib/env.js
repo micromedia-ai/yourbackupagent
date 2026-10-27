@@ -42,6 +42,8 @@ export function projectSettings(env) {
     vaultProject: env.VAULT_PROJECT || '',
     drillProject: env.DRILL_PROJECT || '',
     drillWorkflow: env.DRILL_WORKFLOW || 'rebuild-drill.yml',
+    drillParts: env.DRILL_PARTS || '',
+    healthPath: env.HEALTH_PATH || '',
   };
 }
 

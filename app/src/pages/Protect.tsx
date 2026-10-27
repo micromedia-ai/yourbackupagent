@@ -3,7 +3,7 @@ import { call } from '../lib/firebase';
 import { Copy, Pill, useBusy } from '../components/ui';
 import { SetUpHere } from '../components/SetUpHere';
 
-type Repo = { repo: string; private: boolean; firebaseProject: string; hasKit: boolean; managed: boolean };
+type Repo = { repo: string; private: boolean; firebaseProject: string; hasKit: boolean; managed: boolean; parts?: string[] | null; partsWhy?: Record<string, string> | null };
 type Result = { pr: string; number: number; projectId: string; secret: string; commands: { what: string; cmd: string }[] };
 
 export function Protect() {
@@ -30,7 +30,8 @@ export function Protect() {
                 <label className={`radio ${pick?.repo === r.repo ? 'on' : ''}`}>
                   <input type="radio" name="repo" id={`repo-${r.repo}`} checked={pick?.repo === r.repo} onChange={() => { setPick(r); setProjectId(r.firebaseProject); setLabel(r.repo.split('/')[1].replace(/[-_]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())); }} />
                   <span><b>{r.repo}</b> <span className="small muted">{r.firebaseProject || 'no .firebaserc project'}</span>{' '}
-                    {r.hasKit ? <Pill tone="ok">has backups</Pill> : <Pill tone="bad">not protected</Pill>}{r.managed && <Pill tone="info">in the app</Pill>}</span>
+                    {r.hasKit ? <Pill tone="ok">has backups</Pill> : <Pill tone="bad">not protected</Pill>}{r.managed && <Pill tone="info">in the app</Pill>}
+                    {r.parts && <><br /><span className="small muted" title={Object.entries(r.partsWhy || {}).map(([k, v]) => `${k}: ${v}`).join('\n')}>Drills check: {r.parts.join(', ')}</span></>}</span>
                 </label>
               </li>
             ))}

@@ -20,6 +20,7 @@ import { canDelete, health, prunePlan, RUN_ID } from './lib/sets.js';
 import { lockBlocks, endsLock, LOCK_HOURS } from './lib/drilllock.js';
 import { firebaseProject, pickDeploySecret, kitFiles, setupCommands, TEMPLATE_PATHS, KIT_REPO } from './lib/protect.js';
 import { readSiteFacts, drillWorkflow, signIn } from './lib/drill.js';
+import { detectParts, effectiveParts, parsePartsSetting, validHealthPath } from './lib/parts.js';
 import { sendMail } from './lib/mail.js';
 import { createOAuth, OAuthError, resourceMetadata, authServerMetadata, resourceUrl } from './lib/oauth.js';
 import { handleMcp } from './lib/mcp.js';
@@ -143,14 +144,26 @@ async function refreshProject(gh, repo, s = null) {
   const { envText, ...rest } = p;
   // Without a rebuild-drill workflow, rebuild drills restore data only.
   const siteDrill = Boolean(await gh.fileText(p.repo, `.github/workflows/${p.drillWorkflow}`).catch(() => true));
+  const detected = await repoParts(gh, p.repo).catch((e) => { errors.push(`parts: ${e.message}`); return null; });
+  const eff = effectiveParts(detected && detected.parts, p.drillParts);
   batch.set(ref, {
-    ...rest, envText, health: h, errors, siteDrill, refreshedAt: FieldValue.serverTimestamp(),
+    ...rest, envText, health: h, errors, siteDrill,
+    parts: eff.parts, partsManual: eff.manual, detectedParts: detected ? detected.parts : null, partsWhy: detected ? detected.why : null,
+    refreshedAt: FieldValue.serverTimestamp(),
     totals: { sets: sets.length, inProject: projectSetsOnly.length, inVault: (inVault || []).length, bytes: totalBytes, storeBytes: storeTotal },
     prunePreview: inProject ? prunePlan(projectSetsOnly, { keepMin: p.keepMinSets, keepDays: p.keepDays }) : [],
   }, { merge: false });
   await batch.commit();
   await importRuns(gh, p).catch((e) => errors.push(`GitHub runs: ${e.message}`));
   return { repo, projectId: p.projectId, protected: true, health: h, errors };
+}
+
+// What a drill of this repo brings up (lib/parts.js), from its file list and
+// firebase.json (at the root or in app/).
+async function repoParts(gh, repo) {
+  const [paths, fb] = await Promise.all([gh.paths(repo), gh.fileText(repo, 'firebase.json')]);
+  const fbText = fb ? fb.text : (await gh.fileText(repo, 'app/firebase.json'))?.text || '';
+  return detectParts(paths, fbText);
 }
 
 // GitHub runs (nightly backups, Sunday drills, rebuild drills) into the log,
@@ -488,7 +501,8 @@ export const repos = onCall(opts, async (req) => {
     const sub = fb ? null : await gh.fileText(r.full_name, 'app/firebase.json');
     if (!fb && !sub && !kit) continue;
     const rc = (await gh.fileText(r.full_name, '.firebaserc')) || (sub ? await gh.fileText(r.full_name, 'app/.firebaserc') : null);
-    out.push({ repo: r.full_name, private: r.private, pushedAt: r.pushed_at, firebaseProject: rc ? firebaseProject(rc.text) : '', hasKit: Boolean(kit), managed: s.repos.includes(r.full_name) });
+    const parts = await repoParts(gh, r.full_name).catch(() => null);
+    out.push({ repo: r.full_name, private: r.private, pushedAt: r.pushed_at, firebaseProject: rc ? firebaseProject(rc.text) : '', hasKit: Boolean(kit), managed: s.repos.includes(r.full_name), parts: parts ? parts.parts : null, partsWhy: parts ? parts.why : null });
   }
   return { repos: out };
 });
@@ -666,6 +680,42 @@ export const setLabel = onCall(opts, async (req) => {
   }
 });
 
+// What rebuild drills of one project bring up and check: a pull request
+// setting DRILL_PARTS (empty = detect from the repo) and HEALTH_PATH in its
+// backup.env.
+export const setDrillParts = onCall(opts, async (req) => {
+  const by = await requireUser(req);
+  const { project, parts, healthPath } = req.data || {};
+  const words = Array.isArray(parts) ? parts.filter((x) => x !== 'data') : [];
+  let wanted;
+  try { wanted = parts == null ? null : parsePartsSetting(words.join(' ') || 'data'); } catch (e) { throw new HttpsError('invalid-argument', e.message); }
+  const hp = String(healthPath == null ? '' : healthPath).trim();
+  if (!validHealthPath(hp)) throw new HttpsError('invalid-argument', 'the health path must start with / and have only letters, digits, . _ - /');
+  const p = await projectDoc(project);
+  // Same as detected: back to automatic.
+  const same = wanted && p.detectedParts && wanted.join(' ') === p.detectedParts.join(' ');
+  const value = !wanted || same ? '' : `"${wanted.filter((x) => x !== 'data').join(' ')}"`;
+  const what = `${value ? `parts ${wanted.join(', ')}` : 'parts detected from the repo'}${hp ? `, health ${hp}` : ''}`;
+  const ref = await logStart(by, `drill: ${what}`, { project: p.projectId });
+  try {
+    const gh = github(GITHUB_TOKEN.value());
+    const cur = await gh.fileText(p.repo, 'backup-kit/backup.env');
+    const text = setEnvValue(setEnvValue(cur.text, 'DRILL_PARTS', value), 'HEALTH_PATH', hp);
+    if (text === cur.text) throw new Error('nothing to change');
+    const pr = await gh.pullRequest(p.repo, {
+      branch: 'yourbackupagent/drill-parts', message: `Backups: rebuild drills check ${what}`,
+      title: `Backups: rebuild drills check ${what}`,
+      body: `Sets \`DRILL_PARTS=${value}\` and \`HEALTH_PATH=${hp}\` in \`backup-kit/backup.env\`. ${value ? 'Rebuild drills bring up and check these parts instead of the ones detected from the repo.' : 'Rebuild drills use the parts detected from the repo.'} ${hp ? `The drill also requires ${hp} on the drill site to answer 2xx.` : ''} Parts: data (restore counts), web (the site answers), api (the same functions as production are active), service (Cloud Run), mobile (smoke test).\n\nOpened from the YourBackupAgent Manager by ${by}.`,
+      files: [{ path: 'backup-kit/backup.env', content: text }],
+    });
+    await logEnd(ref, 'succeeded', `pull request #${pr.number} (takes effect when merged)`, { link: pr.html_url });
+    return { pr: pr.html_url };
+  } catch (e) {
+    await logEnd(ref, 'failed', e.message);
+    throw new HttpsError(e.message === 'nothing to change' ? 'failed-precondition' : 'internal', e.message);
+  }
+});
+
 export const saveSettings = onCall(opts, async (req) => {
   const by = await requireUser(req);
   const { emails, defaultMinSets, repos: repoList, sizeWarnSetGB, sizeWarnTotalGB } = req.data || {};
@@ -719,8 +769,12 @@ function protectBody(repo, projectId, kitRef, secret, existing, drill) {
 // The site part of rebuild drills for a repo without one, made from its
 // firebase.json; null when it has one already or no firebase.json.
 const DRILL_FILE = 'rebuild-drill.yml';
-async function siteDrillFile(gh, repo, projectId, label, backupYml, secret) {
-  if (await gh.fileText(repo, `.github/workflows/${DRILL_FILE}`)) return null;
+// With update, a file the app made earlier ("Made by YourBackupAgent") is
+// remade with the current checks; a hand-written one is left alone.
+const MADE_BY = '# Made by YourBackupAgent';
+async function siteDrillFile(gh, repo, projectId, label, backupYml, secret, update = false) {
+  const cur = await gh.fileText(repo, `.github/workflows/${DRILL_FILE}`);
+  if (cur && !(update && cur.text.includes(MADE_BY))) return null;
   const facts = await readSiteFacts((pth, ref) => gh.fileText(repo, pth, ref));
   // Nothing to bring up without a Hosting site.
   if (!facts || !facts.only.some((o) => o.startsWith('hosting'))) return null;
@@ -732,13 +786,24 @@ async function siteDrillFile(gh, repo, projectId, label, backupYml, secret) {
 export const addSiteDrill = onCall(opts, async (req) => {
   const by = await requireUser(req);
   const p = await projectDoc((req.data || {}).project);
-  const ref = await logStart(by, 'add site drill', { project: p.projectId });
+  const ref = await logStart(by, (req.data || {}).update ? 'update site drill' : 'add site drill', { project: p.projectId });
   try {
     const gh = github(GITHUB_TOKEN.value());
     const backupYml = (await gh.fileText(p.repo, `.github/workflows/${BACKUP_WORKFLOW}`))?.text || '';
     const secret = /secrets\.([A-Z0-9_]+)/.exec(backupYml)?.[1] || '';
-    const file = await siteDrillFile(gh, p.repo, p.projectId, p.label || p.projectId, backupYml, secret);
-    if (!file) throw new Error(`${p.repo} already has .github/workflows/${DRILL_FILE}, or no firebase.json`);
+    const update = Boolean((req.data || {}).update);
+    const file = await siteDrillFile(gh, p.repo, p.projectId, p.label || p.projectId, backupYml, secret, update);
+    if (!file) throw new Error(update ? `${p.repo}'s .github/workflows/${DRILL_FILE} was not made by YourBackupAgent (or there is no firebase.json); edit it by hand` : `${p.repo} already has .github/workflows/${DRILL_FILE}, or no firebase.json`);
+    if (update) {
+      const pr = await gh.pullRequest(p.repo, {
+        branch: 'yourbackupagent/site-drill-update', message: 'Backups: rebuild drill with the current checks',
+        title: 'Backups: rebuild drill with the current checks',
+        body: `Remakes \`.github/workflows/${DRILL_FILE}\` from this repo's \`firebase.json\` with YourBackupAgent's current checks: the drill reads \`DRILL_PARTS\` and \`HEALTH_PATH\` from \`backup-kit/backup.env\`, and the api part requires every function production runs (except extensions) to be active in the drill. Hand edits to the old file are replaced; compare before merging.\n\nOpened from the YourBackupAgent Manager by ${by}.`,
+        files: [file],
+      });
+      await logEnd(ref, 'succeeded', `pull request #${pr.number} (takes effect when merged)`, { link: pr.html_url });
+      return { pr: pr.html_url };
+    }
     const pr = await gh.pullRequest(p.repo, {
       branch: 'yourbackupagent/site-drill', message: 'Backups: rebuild drills deploy the site too',
       title: 'Backups: rebuild drills deploy the site too',

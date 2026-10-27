@@ -212,17 +212,46 @@ ${si.lines.map((l) => `          ${l}`).join('\n')}
           set -uo pipefail
           URL="https://$PROJECT.web.app"
           fail=0
-          code=$(curl -s -o /dev/null -w '%{http_code}' "$URL/")
-          [ "$code" = "200" ] && echo "home page: ok" || { echo "::error::$URL/ answered HTTP $code"; fail=1; }
-          if [ -n "$API_PATH" ]; then
-            # The backend through Hosting: any answer but 404 or a 5xx means the function runs.
-            code=$(curl -s -o /dev/null -w '%{http_code}' "$URL$API_PATH")
-            if [ "$code" != "404" ] && [ "$code" -lt 500 ]; then echo "backend $API_PATH: ok (HTTP $code)"; else echo "::error::$URL$API_PATH answered HTTP $code"; fail=1; fi
+          # What to check: DRILL_PARTS and HEALTH_PATH in backup-kit/backup.env
+          # (empty DRILL_PARTS: everything this workflow deployed).
+          val() { sed -n "s/^$1=//p" backup-kit/backup.env 2>/dev/null | tail -1 | tr -d \\"\\'; }
+          PARTS=$(val DRILL_PARTS); HEALTH=$(val HEALTH_PATH)
+          part() { [ -z "$PARTS" ] || [[ " $PARTS " == *" $1 "* ]]; }
+          echo "parts: \${PARTS:-all deployed}\${HEALTH:+, health $HEALTH}"
+          if part web; then
+            code=$(curl -s -o /dev/null -w '%{http_code}' "$URL/")
+            [ "$code" = "200" ] && echo "web: home page ok" || { echo "::error::$URL/ answered HTTP $code"; fail=1; }
           fi
-          want=$(gcloud functions list --project "$PROJECT" --format='value(name)' 2>/dev/null | wc -l)
-          got=$(gcloud functions list --project "$PROJECT" --format='value(name,state)' 2>/dev/null | grep -c ACTIVE || true)
-          echo "functions active: $got of $want"
-          [ "$got" = "$want" ] || { echo "::error::only $got of $want functions are active"; fail=1; }
+          got=0; want=0
+          if part api; then
+            if [ -n "$HEALTH" ]; then
+              # A health path must really answer (2xx).
+              if [[ "$HEALTH" =~ ^/[A-Za-z0-9._/-]*$ ]]; then
+                code=$(curl -s -o /dev/null -w '%{http_code}' "$URL$HEALTH")
+                [[ "$code" =~ ^2 ]] && echo "api: $HEALTH ok (HTTP $code)" || { echo "::error::$URL$HEALTH answered HTTP $code"; fail=1; }
+              else echo "::error::HEALTH_PATH must be a path such as /api/health"; fail=1; fi
+            elif [ -n "$API_PATH" ]; then
+              # The backend through Hosting: any answer but 404 or a 5xx means the function runs.
+              code=$(curl -s -o /dev/null -w '%{http_code}' "$URL$API_PATH")
+              if [ "$code" != "404" ] && [ "$code" -lt 500 ]; then echo "api: $API_PATH ok (HTTP $code)"; else echo "::error::$URL$API_PATH answered HTTP $code"; fail=1; fi
+            fi
+            # The same functions as production, every one active.
+            names() { sed 's#.*/##' | sort -u | grep . || true; }
+            all=$(gcloud functions list --project "$PROJECT" --format='value(name)' 2>/dev/null | names)
+            active=$(gcloud functions list --project "$PROJECT" --format='value(name,state,status)' 2>/dev/null | grep -w ACTIVE | awk '{print $1}' | names)
+            want=$(echo "$all" | grep -c . || true); got=$(echo "$active" | grep -c . || true)
+            echo "functions active: $got of $want"
+            [ "$got" = "$want" ] || { echo "::error::only $got of $want functions are active: $(comm -23 <(echo "$all") <(echo "$active") | tr '\\n' ' ')"; fail=1; }
+            if prod=$(gcloud functions list --project "$PRODUCTION" --format='value(name)' 2>/dev/null); then
+              # Firebase Extensions (ext-*) are installed, not deployed from this repo.
+              prod=$(echo "$prod" | names | grep -v '^ext-' || true)
+              missing=$(comm -23 <(echo "$prod") <(echo "$active") | grep . || true)
+              echo "functions in production: $(echo "$prod" | grep -c . || true), missing or not active in the drill: $(echo "$missing" | grep -c . || true)"
+              [ -z "$missing" ] || { echo "::error::not running in the drill: $(echo "$missing" | tr '\\n' ' ')"; fail=1; }
+            else
+              echo "::warning::cannot list production's functions (needs cloudfunctions.viewer on $PRODUCTION); compared the drill with itself only"
+            fi
+          fi
           TOKEN=$(gcloud auth print-access-token)
           base="https://firestore.googleapis.com/v1/projects/$PROJECT/databases/(default)/documents"
           cols=$(curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' "$base:listCollectionIds" -d '{"pageSize":300}' | jq -r '.collectionIds[]?')

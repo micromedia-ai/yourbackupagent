@@ -16,6 +16,7 @@ export function Settings() {
   const [perProject, setPerProject] = useState<Record<string, number>>({});
   const [modes, setModes] = useState<Record<string, 'full' | 'changed'>>({});
   const [names, setNames] = useState<Record<string, string>>({});
+  const [parts, setParts] = useState<Record<string, { parts: string[]; health: string }>>({});
   const { busy, run, banner } = useBusy();
   const { rows: requests } = useRequests();
   const notify = useDoc<{ health?: boolean; recoveries?: boolean; drills?: boolean; weekly?: boolean; recipients?: string[] }>('config/notify');
@@ -82,6 +83,33 @@ export function Settings() {
                 <td><button className="btn small" disabled={!!busy || !want || want === p.label} onClick={() => run('name', async () => {
                   const r = await call<{ pr: string }>('setLabel', { project: p.projectId, label: want });
                   return { text: 'Pull request opened. Merge it, then refresh, to see the new name.', link: r.pr };
+                })}>Open pull request</button></td>
+              </tr>
+            );
+          })}</tbody>
+        </table></div>
+      </section>
+      <section className="panel">
+        <h4>What rebuild drills check</h4>
+        <p className="small">Every drill restores the data and compares counts. On top: <b>web</b> the site answers, <b>api</b> every function production runs is active in the drill (and the health path answers 2xx, if set), <b>service</b> the Cloud Run container, <b>mobile</b> the app's smoke test. Detected from each repository unless set here (<code>DRILL_PARTS</code>, <code>HEALTH_PATH</code> in its <code>backup-kit/backup.env</code>), so a change opens a pull request.</p>
+        <div className="tscroll"><table>
+          <thead><tr><th>Project</th><th>Detected</th><th>Check</th><th>Health path</th><th></th></tr></thead>
+          <tbody>{(projects || []).map((p) => {
+            const now = { parts: p.parts || ['data'], health: p.healthPath || '' };
+            const cur = parts[p.projectId] || now;
+            const changed = cur.parts.join(' ') !== now.parts.join(' ') || cur.health !== now.health;
+            const toggle = (k: string) => setParts({ ...parts, [p.projectId]: { ...cur, parts: ['data', 'web', 'api', 'service', 'mobile'].filter((x) => x === 'data' || (x === k ? !cur.parts.includes(k) : cur.parts.includes(x))) } });
+            return (
+              <tr key={p.projectId}>
+                <td>{p.label}</td>
+                <td className="small muted">{(p.detectedParts || ['?']).join(', ')}</td>
+                <td className="row wrap">{['web', 'api', 'service', 'mobile'].map((k) => (
+                  <label key={k} className="small"><input type="checkbox" id={`part-${p.projectId}-${k}`} checked={cur.parts.includes(k)} onChange={() => toggle(k)} /> {k}</label>
+                ))}</td>
+                <td><input id={`health-${p.projectId}`} placeholder="/api/health" maxLength={100} value={cur.health} onChange={(e) => setParts({ ...parts, [p.projectId]: { ...cur, health: e.target.value.trim() } })} /></td>
+                <td><button className="btn small" disabled={!!busy || !changed} onClick={() => run('parts', async () => {
+                  const r = await call<{ pr: string }>('setDrillParts', { project: p.projectId, parts: cur.parts, healthPath: cur.health });
+                  return { text: 'Pull request opened. Merge it, then refresh. Older site drill workflows need "Update site drill" on the project page to use it.', link: r.pr };
                 })}>Open pull request</button></td>
               </tr>
             );

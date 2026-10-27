@@ -57,6 +57,17 @@ export function ProjectPage({ projectId, user }: { projectId: string; user: User
         <Pill tone="muted">Others {p.keepDays} days here, {p.offsiteKeepDays} in the vault</Pill>
         {p.offsiteBucket ? <Pill tone="ok">Off-site: {p.offsiteBucket}</Pill> : <Pill tone="warn">No off-site copy</Pill>}
       </div>
+      {p.parts && (
+        <div className="row wrap">
+          <span className="small" title={Object.entries(p.partsWhy || {}).map(([k, v]) => `${k}: ${v}`).join('\n')}>
+            Rebuild drills check: {p.parts.join(', ')} <span className="muted">({p.partsManual ? 'set by hand' : 'detected from the repo'}{p.healthPath ? `; health ${p.healthPath}` : ''}; change in Settings)</span>
+          </span>
+          {p.siteDrill && <button className="btn small" id="update-site-drill" disabled={!!busy} onClick={() => run('site drill', async () => {
+            const r = await call<{ pr: string }>('addSiteDrill', { project: p.projectId, update: true });
+            return { text: 'Pull request opened: the site drill remade with the current checks. Compare and merge it.', link: r.pr };
+          })}>Update site drill</button>}
+        </div>
+      )}
       <DrillSlot />
       {p.siteDrill === false && (
         <div className="banner warn row between wrap">

@@ -43,6 +43,11 @@ test('the workflow guards production, builds, deploys what firebase.json has, ch
   assert.match(wf, /npm run build/);
   assert.match(wf, /drill-site/);
   assert.doesNotMatch(wf, /target:apply/);
+  // DRILL_PARTS / HEALTH_PATH are read when the drill runs; api compares with production's functions.
+  assert.match(wf, /PARTS=\$\(val DRILL_PARTS\); HEALTH=\$\(val HEALTH_PATH\)/);
+  assert.match(wf, /gcloud functions list --project "\$PRODUCTION"/);
+  assert.match(wf, /::error::not running in the drill/);
+  assert.match(wf, /tr '\\n' ' '/);
   const keyed = drillWorkflow({ projectId: 'p-app', label: 'P', facts, signIn: signIn('', 'K') });
   assert.doesNotMatch(keyed, /id-token/);
   assert.match(keyed, /credentials_json: \$\{\{ secrets\.K \}\}/);

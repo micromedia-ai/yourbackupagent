@@ -36,7 +36,7 @@ export function startFakes(port = 4999) {
       'app/runner/onboard.sh': tpl('app/runner/onboard.sh'),
     },
   };
-  let labels = { 'drill-of': 'other-app', 'drill-data': 'passed' };
+  let labels = { 'drill-of': 'other-app', 'drill-data': 'passed', 'drill-site': 'passed' };
   const server = http.createServer(async (req, res) => {
     let body = '';
     for await (const c of req) body += c;

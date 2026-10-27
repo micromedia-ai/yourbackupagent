@@ -242,8 +242,8 @@ async function main() {
     const drillFile = tree && tree.body.tree.find((f) => f.path === '.github/workflows/rebuild-drill.yml');
     check('the pull request carries a site drill made from firebase.json', Boolean(drillFile) && drillFile.content.includes('PRODUCTION: yourcontentcreator-f7ef5') && drillFile.content.includes('npm run build')
       && drillFile.content.includes('--only hosting,functions,firestore') && drillFile.content.includes("API_PATH: '/api/hello'") && drillFile.content.includes('secrets.FIREBASE_SERVICE_ACCOUNT_YCC'), drillFile ? drillFile.content.slice(0, 200) : 'missing');
-    await page.getByText('Or on your Mac').click();
-    check('protect still shows the one Mac command to finish', (await page.locator('.code pre').allTextContents()).some((t) => t.includes('./onboard.sh dagangilat/your-content-creator')));
+    await page.getByText('Or on your computer').click();
+    check('protect still shows the one computer command to finish', (await page.locator('.code pre').allTextContents()).some((t) => t.includes('./onboard.sh dagangilat/your-content-creator')));
 
     // "Set it up here": a browser sign-in as the project owner (and the vault owner).
     const jobsBefore = fakes.calls.filter((c) => c.path.endsWith('/jobs/kit-runner:run')).length;
@@ -293,6 +293,11 @@ async function main() {
     await page.getByText('Pull request opened. Merge it to apply from the next backup.').waitFor({ timeout: 30000 });
     const modeTree = fakes.calls.filter((c) => c.path === '/repos/dagangilat/foundation-next/git/trees').pop();
     check('choosing changed-only media copies opens a pull request with STORAGE_MODE=changed', modeTree && /STORAGE_MODE=changed/.test(modeTree.body.tree[0].content) && /KEEP_MIN_SETS=/.test(modeTree.body.tree[0].content));
+    await page.locator('#name-demo-fn').fill('Foundation Brand');
+    await page.locator('tr', { has: page.locator('#name-demo-fn') }).getByRole('button', { name: 'Open pull request' }).click();
+    await page.getByText('Pull request opened. Merge it, then refresh, to see the new name.').waitFor({ timeout: 30000 });
+    const nameTree = fakes.calls.filter((c) => c.path === '/repos/dagangilat/foundation-next/git/trees').pop();
+    check('renaming a project opens a pull request with PROJECT_LABEL="Foundation Brand"', nameTree && /PROJECT_LABEL="Foundation Brand"/.test(nameTree.body.tree[0].content) && /STORAGE_MODE=changed/.test(nameTree.body.tree[0].content));
     // Email alerts.
     const sent = () => fakes.emails.map((e) => e.subject);
     await page.getByRole('button', { name: 'Send me a test' }).click();

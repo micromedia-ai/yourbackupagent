@@ -18,7 +18,7 @@ export function Protect() {
   return (
     <div className="stack narrow">
       <h1>Protect a repository</h1>
-      <p>Opens a pull request in the repository with YourBackupAgent (<code>backup-kit/</code> and a daily Backup workflow), filled in from its <code>.firebaserc</code>. Then set it up right here with a Google sign-in, or with one command on your Mac.</p>
+      <p>Opens a pull request in the repository with YourBackupAgent (<code>backup-kit/</code> and a daily Backup workflow), filled in from its <code>.firebaserc</code>. Then set it up right here with a Google sign-in, or with one command on your own computer (laptop or desktop).</p>
       {banner}
       {!repos && <button className="btn primary" disabled={!!busy} onClick={load}>{busy ? 'Reading your repositories…' : 'List my Firebase repositories'}</button>}
       {repos && !result && (
@@ -55,7 +55,7 @@ export function Protect() {
       )}
       {result && (
         <details className="panel">
-          <summary><b>Or on your Mac</b></summary>
+          <summary><b>Or on your computer</b></summary>
           <p className="small"> The script checks out the pull request, asks you to log in only where it needs to, {result.secret ? <>uses the secret <code>{result.secret}</code> the repository already has, </> : <>makes a GitHub key for the backups (the repository has none yet), </>}sets up the backup bucket, protection and the vault, takes the first backup, lets this app read it, offers a rebuild drill, and at the end offers to merge. It can run again safely.</p>
           <ol className="steps">
             {result.commands.map((c) => <li key={c.cmd}><span>{c.what}</span><Copy text={c.cmd} /></li>)}

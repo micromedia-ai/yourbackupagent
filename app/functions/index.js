@@ -531,7 +531,7 @@ export const protect = onCall(opts, async (req) => {
 });
 
 // "Set it up here" on the Protect page: the one-time setup of a repository's
-// project (what onboard.sh does on a Mac), done by the kit runner with the
+// project (what onboard.sh does on your computer), done by the kit runner with the
 // project owner's short-lived Google sign-in from the browser, plus the vault
 // owner's when that is another account. Checked here, kept in onboard/<id>
 // (server only, read once and deleted by the runner), expire within the hour.
@@ -640,6 +640,32 @@ export const setStorageMode = onCall(opts, async (req) => {
   }
 });
 
+// Display name of one project (a brand name, for example): a pull request
+// changing PROJECT_LABEL in its backup.env, the one place the name lives.
+export const setLabel = onCall(opts, async (req) => {
+  const by = await requireUser(req);
+  const { project } = req.data || {};
+  const label = String((req.data || {}).label || '').trim();
+  if (!label || label.length > 60 || /["'`$\\\n\r]/.test(label)) throw new HttpsError('invalid-argument', 'the name must be 1-60 characters, without quotes, $ or backslashes');
+  const p = await projectDoc(project);
+  const ref = await logStart(by, `rename to ${label}`, { project: p.projectId });
+  try {
+    const gh = github(GITHUB_TOKEN.value());
+    const cur = await gh.fileText(p.repo, 'backup-kit/backup.env');
+    const pr = await gh.pullRequest(p.repo, {
+      branch: 'yourbackupagent/display-name', message: `Backups: show this project as ${label}`,
+      title: `Backups: show this project as ${label}`,
+      body: `Sets \`PROJECT_LABEL="${label}"\` in \`backup-kit/backup.env\`. The YourBackupAgent app, its emails and the backup logs then call ${p.projectId} "${label}". Nothing else changes.\n\nOpened from the YourBackupAgent Manager by ${by}.`,
+      files: [{ path: 'backup-kit/backup.env', content: setEnvValue(cur.text, 'PROJECT_LABEL', `"${label}"`) }],
+    });
+    await logEnd(ref, 'succeeded', `pull request #${pr.number} (takes effect when merged)`, { link: pr.html_url });
+    return { pr: pr.html_url };
+  } catch (e) {
+    await logEnd(ref, 'failed', e.message);
+    throw new HttpsError('internal', e.message);
+  }
+});
+
 export const saveSettings = onCall(opts, async (req) => {
   const by = await requireUser(req);
   const { emails, defaultMinSets, repos: repoList, sizeWarnSetGB, sizeWarnTotalGB } = req.data || {};
@@ -681,7 +707,7 @@ function protectBody(repo, projectId, kitRef, secret, existing, drill) {
     '',
     '- `backup-kit/backup.sh`: runs the kit version pinned in `backup-kit/backup.env`',
     existing ? '- `backup-kit/backup.env` already exists and is left as it is' : '- `backup-kit/backup.env`: this project\'s settings (names only, no secrets). Check `CI_SA` and the bucket names.',
-    `- \`.github/workflows/backup.yml\`: back up at 02:00 UTC every day, restore drill on Sundays (sign-in secret: \`${secret || 'YOURBACKUPAGENT_SA_KEY, made by onboard.sh'}\`)`,
+    `- \`.github/workflows/backup.yml\`: back up at 02:00 UTC every day, restore drill on Sundays (signs in to Google ${secret ? `with the secret \`${secret}\`` : 'with the set-up below'})`,
     drill ? `- \`.github/workflows/${DRILL_FILE}\`: the site part of rebuild drills, made from this repo's \`firebase.json\`: builds the site from main and deploys it into the drill project (keys empty, scheduled jobs paused), then checks it answers. Never touches \`${projectId}\`.` : `- \`.github/workflows/${DRILL_FILE}\` already exists and is left as it is`,
     '',
     'Before merging: press **Set it up here** on the Protect page of the YourBackupAgent Manager (or run `./onboard.sh ' + repo + '` from a checkout of dagangilat/yourbackupagent). It sets up the buckets, protection and keyless GitHub sign-in, and takes the first backup. Otherwise the first nightly backup fails.',

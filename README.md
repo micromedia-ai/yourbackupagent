@@ -100,7 +100,7 @@ setup, protect, offsite, the app's access and the first backup. The sign-in is
 used once, never stored past that, and expires within the hour. Merge the pull
 request, then start a rebuild drill from the project page.
 
-The same on a Mac, from this checkout (it makes a JSON key instead):
+The same on your own computer, from this checkout (it makes a JSON key instead):
 
 ```bash
 ./onboard.sh owner/repo        # login, GitHub key if missing, setup, protect, offsite,

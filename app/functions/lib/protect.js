@@ -54,7 +54,7 @@ export function kitFiles({ repo, projectId, label, secret, kitRef, templates }) 
 // One command does the whole one-time setup (onboard.sh in the kit repo).
 export function setupCommands(repo) {
   return [
-    { what: 'Once per Mac: a copy of the kit repository', cmd: 'gh repo clone dagangilat/yourbackupagent' },
+    { what: 'Once per computer: a copy of the kit repository', cmd: 'gh repo clone dagangilat/yourbackupagent' },
     { what: 'Then, from that folder: log in, GitHub key, buckets, protection, first backup, app access, rebuild drill, merge', cmd: `cd yourbackupagent && git pull -q && ./onboard.sh ${repo}` },
   ];
 }

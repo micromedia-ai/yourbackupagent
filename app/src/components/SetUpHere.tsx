@@ -8,7 +8,7 @@ type Log = { status: string; detail?: string };
 
 // The one-time setup of a protected repository, from the browser: you sign in
 // as the project's owner (and the vault owner, when another account), and the
-// app's runner does what onboard.sh does on a Mac. Nothing is kept: the
+// app's runner does what onboard.sh does on your computer. Nothing is kept: the
 // sign-in is used once and expires within the hour.
 export function SetUpHere({ repo, projectId }: { repo: string; projectId: string }) {
   const [owner, setOwner] = useState<SignIn | null>(null);

@@ -21,7 +21,7 @@ is only proven by restoring it somewhere else.
 | `templates/backup.env.example` | A project's settings |
 | `templates/backup-kit-wrapper.sh` | Goes to a project's `backup-kit/backup.sh`: runs the kit version pinned by `KIT_REF` |
 | `templates/backup.yml` | A project's daily workflow (backup + check, Sunday restore drill) |
-| `templates/rebuild-drill.yml` | Foundation Next's rebuild-drill workflow, as a starting point (each project deploys differently) |
+| `templates/rebuild-drill.yml` | Foundation Next's hand-made rebuild-drill workflow; other projects get one generated from their `firebase.json` by the manager app (`app/functions/lib/drill.js`) |
 | `test/run.sh` | Offline tests against a fake Google Cloud |
 
 Versions are tags (`v1`, `v1.1`, ...). A project moves to a new version by
@@ -114,9 +114,11 @@ Either runs every step below in order and can run again. By hand:
    `templates/backup.env.example` to `backup-kit/backup.env` and fill it in.
 2. Copy `templates/backup.yml` to `.github/workflows/backup.yml` and set the
    deploy key secret name.
-3. Write `.github/workflows/rebuild-drill.yml` from `templates/rebuild-drill.yml`:
-   it builds and deploys the site into the drill project the way the
-   project's own deploy does.
+3. `.github/workflows/rebuild-drill.yml` builds and deploys the site into the
+   drill project. The manager app makes one from the repo's `firebase.json`
+   (in the Protect pull request, or "Add site drill" on a project's page);
+   edit it when the project deploys in a special way (Foundation Next's
+   batched functions deploy is in `templates/rebuild-drill.yml`).
 4. Run the one-time setup below as a project owner, then a rebuild drill.
 
 ## One-time setup (copy-paste)

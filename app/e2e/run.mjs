@@ -152,6 +152,12 @@ async function main() {
     await page.locator('table.sets tbody tr').first().waitFor();
     const rows = await page.locator('table.sets tbody tr').count();
     check('project page lists all 6 sets', rows === 6, String(rows));
+    // No rebuild-drill.yml in the repo: the page says drills are data only and offers the site drill.
+    await page.locator('#add-site-drill').click();
+    await page.getByText('Pull request opened: the site drill').waitFor({ timeout: 30000 });
+    const siteTree = fakes.calls.filter((c) => c.path === '/repos/dagangilat/foundation-next/git/trees').pop();
+    const siteFile = siteTree && siteTree.body.tree.find((f) => f.path === '.github/workflows/rebuild-drill.yml');
+    check('a project without a site drill gets one by pull request', Boolean(siteFile) && siteFile.content.includes('PRODUCTION: demo-fn') && siteTree.body.tree.length === 1, JSON.stringify(siteTree?.body.tree.map((f) => f.path)));
     await page.screenshot({ path: `${SHOTS}/2-project.png`, fullPage: true });
 
     // Delete the two oldest good sets with min 3: allowed for one... check refusal first.
@@ -232,6 +238,9 @@ async function main() {
     const envFile = tree && tree.body.tree.find((f) => f.path === 'backup-kit/backup.env');
     check('the pull request carries the kit files, filled in', envFile && /PROJECT_ID=yourcontentcreator-f7ef5/.test(envFile.content) && /KEEP_MIN_SETS=7/.test(envFile.content) && /OFFSITE_BUCKET=yourbackupagent-yourcontentcreator/.test(envFile.content)
       && tree.body.tree.some((f) => f.path === '.github/workflows/backup.yml' && f.content.includes('secrets.FIREBASE_SERVICE_ACCOUNT_YCC') && f.content.includes('yourbackupagent@v1.1')));
+    const drillFile = tree && tree.body.tree.find((f) => f.path === '.github/workflows/rebuild-drill.yml');
+    check('the pull request carries a site drill made from firebase.json', Boolean(drillFile) && drillFile.content.includes('PRODUCTION: yourcontentcreator-f7ef5') && drillFile.content.includes('npm run build')
+      && drillFile.content.includes('--only hosting,functions,firestore') && drillFile.content.includes("API_PATH: '/api/hello'") && drillFile.content.includes('secrets.FIREBASE_SERVICE_ACCOUNT_YCC'), drillFile ? drillFile.content.slice(0, 200) : 'missing');
     await page.getByText('Or on your Mac').click();
     check('protect still shows the one Mac command to finish', (await page.locator('.code pre').allTextContents()).some((t) => t.includes('./onboard.sh dagangilat/your-content-creator')));
 

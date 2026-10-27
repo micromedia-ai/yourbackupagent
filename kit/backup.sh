@@ -1703,7 +1703,7 @@ cmd_rebuild() {
   if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1 \
      && ! gh api "repos/$REPO/contents/.github/workflows/$DRILL_WORKFLOW" --silent >/dev/null 2>&1; then
     say "  $REPO has no .github/workflows/$DRILL_WORKFLOW, so the site part is skipped: data-only drill done."
-    say "  Add one from the kit's templates/rebuild-drill.yml to prove the site too. Wipe this drill: backup.sh cleanup --drill"
+    say "  Add one with 'Add site drill' on the project's page in the manager app to prove the site too. Wipe this drill: backup.sh cleanup --drill"
     return 0
   fi
   [ -n "$CI_SA" ] || die "CI_SA is empty in $ENV_FILE (the GitHub deploy service account)"

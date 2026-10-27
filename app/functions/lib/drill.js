@@ -231,9 +231,14 @@ ${si.lines.map((l) => `          ${l}`).join('\n')}
                 [[ "$code" =~ ^2 ]] && echo "api: $HEALTH ok (HTTP $code)" || { echo "::error::$URL$HEALTH answered HTTP $code"; fail=1; }
               else echo "::error::HEALTH_PATH must be a path such as /api/health"; fail=1; fi
             elif [ -n "$API_PATH" ]; then
-              # The backend through Hosting: any answer but 404 or a 5xx means the function runs.
+              # The backend through Hosting: any answer below 500 means the function runs.
+              # 500 is the code itself failing, usually on a key that is off in the
+              # drill: a warning (set HEALTH_PATH for a strict check). 404, 502-504
+              # or no answer mean the rewrite or the function is not there.
               code=$(curl -s -o /dev/null -w '%{http_code}' "$URL$API_PATH")
-              if [ "$code" != "404" ] && [ "$code" -lt 500 ]; then echo "api: $API_PATH ok (HTTP $code)"; else echo "::error::$URL$API_PATH answered HTTP $code"; fail=1; fi
+              if [ "$code" != "404" ] && [ "$code" != "000" ] && [ "$code" -lt 500 ]; then echo "api: $API_PATH ok (HTTP $code)"
+              elif [ "$code" = "500" ]; then echo "::warning::$URL$API_PATH answered HTTP 500: the function runs but fails, probably on a key that is off in the drill. Set HEALTH_PATH for a strict check."
+              else echo "::error::$URL$API_PATH answered HTTP $code"; fail=1; fi
             fi
             # The same functions as production, every one active.
             names() { sed 's#.*/##' | sort -u | grep . || true; }

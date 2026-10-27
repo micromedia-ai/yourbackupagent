@@ -71,19 +71,21 @@ export function Settings() {
       </section>
       <section className="panel">
         <h4>Display names</h4>
-        <p className="small">The name the app, its emails and the backup logs use for a project, for example its brand. Kept in each project's <code>backup-kit/backup.env</code> (<code>PROJECT_LABEL</code>), so a change opens a pull request there; it shows here after you merge it and refresh.</p>
+        <p className="small">The name the app and its emails use for a project, for example its brand. Saved here and shown at once. Leave it empty to go back to the name in the project's <code>backup-kit/backup.env</code> (<code>PROJECT_LABEL</code>).</p>
         <div className="tscroll"><table>
           <thead><tr><th>Project</th><th>Now</th><th>Change to</th><th></th></tr></thead>
           <tbody>{(projects || []).map((p) => {
-            const want = (names[p.projectId] ?? p.label).trim();
+            const cur = p.labelInApp ? p.label : '';
+            const want = (names[p.projectId] ?? cur).trim();
             return (
               <tr key={p.projectId}>
-                <td><code>{p.projectId}</code></td><td>{p.label}</td>
-                <td><input id={`name-${p.projectId}`} maxLength={60} value={names[p.projectId] ?? p.label} onChange={(e) => setNames({ ...names, [p.projectId]: e.target.value })} /></td>
-                <td><button className="btn small" disabled={!!busy || !want || want === p.label} onClick={() => run('name', async () => {
-                  const r = await call<{ pr: string }>('setLabel', { project: p.projectId, label: want });
-                  return { text: 'Pull request opened. Merge it, then refresh, to see the new name.', link: r.pr };
-                })}>Open pull request</button></td>
+                <td><code>{p.projectId}</code></td>
+                <td>{p.label}{!p.labelInApp && <span className="small muted"> (from backup.env)</span>}</td>
+                <td><input id={`name-${p.projectId}`} maxLength={60} placeholder={p.envLabel || p.label} value={names[p.projectId] ?? cur} onChange={(e) => setNames({ ...names, [p.projectId]: e.target.value })} /></td>
+                <td><button className="btn small" disabled={!!busy || want === cur} onClick={() => run('name', async () => {
+                  const r = await call<{ label: string }>('setLabel', { project: p.projectId, label: want });
+                  return { text: `Saved: ${p.projectId} now shows as ${r.label}.` };
+                })}>Save</button></td>
               </tr>
             );
           })}</tbody>

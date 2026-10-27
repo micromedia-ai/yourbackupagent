@@ -295,17 +295,22 @@ async function main() {
     const modeTree = fakes.calls.filter((c) => c.path === '/repos/dagangilat/foundation-next/git/trees').pop();
     check('choosing changed-only media copies opens a pull request with STORAGE_MODE=changed', modeTree && /STORAGE_MODE=changed/.test(modeTree.body.tree[0].content) && /KEEP_MIN_SETS=/.test(modeTree.body.tree[0].content));
     await page.locator('#name-demo-fn').fill('Foundation Brand');
-    await page.locator('tr', { has: page.locator('#name-demo-fn') }).getByRole('button', { name: 'Open pull request' }).click();
-    await page.getByText('Pull request opened. Merge it, then refresh, to see the new name.').waitFor({ timeout: 30000 });
+    await page.locator('tr', { has: page.locator('#name-demo-fn') }).getByRole('button', { name: 'Save' }).click();
+    await page.getByText('Saved: demo-fn now shows as Foundation Brand.').waitFor({ timeout: 30000 });
     const nameTree = fakes.calls.filter((c) => c.path === '/repos/dagangilat/foundation-next/git/trees').pop();
-    check('renaming a project opens a pull request with PROJECT_LABEL="Foundation Brand"', nameTree && /PROJECT_LABEL="Foundation Brand"/.test(nameTree.body.tree[0].content) && /STORAGE_MODE=changed/.test(nameTree.body.tree[0].content));
+    check('renaming a project saves it in the app at once, without a pull request', nameTree === modeTree && await page.locator('td', { hasText: /^Foundation Brand$/ }).count() > 0, JSON.stringify(nameTree?.body?.tree?.[0]?.path));
+    // Empty: back to the name in backup.env.
+    await page.locator('#name-demo-fn').fill('');
+    await page.locator('tr', { has: page.locator('#name-demo-fn') }).getByRole('button', { name: 'Save' }).click();
+    await page.getByText('Saved: demo-fn now shows as Foundation Next.').waitFor({ timeout: 30000 });
+    check('an empty display name goes back to PROJECT_LABEL from backup.env', await page.locator('tr', { has: page.locator('#name-demo-fn') }).getByText('(from backup.env)').count() === 1);
     await page.locator('#part-demo-fn-service').check();
     await page.locator('#health-demo-fn').fill('/api/health');
     await page.locator('tr', { has: page.locator('#health-demo-fn') }).getByRole('button', { name: 'Open pull request' }).click();
     await page.getByText(/Pull request opened\. Merge it, then refresh\. Older site drill/).waitFor({ timeout: 30000 });
     const partsTree = fakes.calls.filter((c) => c.path === '/repos/dagangilat/foundation-next/git/trees').pop();
     const partsEnv = partsTree && partsTree.body.tree[0].content;
-    check('changing drill parts opens a pull request with DRILL_PARTS="web api service" and HEALTH_PATH', /\nDRILL_PARTS="web api service"\n/.test(partsEnv) && /\nHEALTH_PATH=\/api\/health\n/.test(partsEnv) && /PROJECT_LABEL="Foundation Brand"/.test(partsEnv), partsEnv);
+    check('changing drill parts opens a pull request with DRILL_PARTS="web api service" and HEALTH_PATH', /\nDRILL_PARTS="web api service"\n/.test(partsEnv) && /\nHEALTH_PATH=\/api\/health\n/.test(partsEnv) && /STORAGE_MODE=changed/.test(partsEnv), partsEnv);
     // Email alerts.
     const sent = () => fakes.emails.map((e) => e.subject);
     await page.getByRole('button', { name: 'Send me a test' }).click();

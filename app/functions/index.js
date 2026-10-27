@@ -146,8 +146,10 @@ async function refreshProject(gh, repo, s = null) {
   const siteDrill = Boolean(await gh.fileText(p.repo, `.github/workflows/${p.drillWorkflow}`).catch(() => true));
   const detected = await repoParts(gh, p.repo).catch((e) => { errors.push(`parts: ${e.message}`); return null; });
   const eff = effectiveParts(detected && detected.parts, p.drillParts);
+  // A display name set in the app wins over PROJECT_LABEL (setLabel).
+  const named = ((await db.doc('config/names').get()).data() || {})[p.projectId];
   batch.set(ref, {
-    ...rest, envText, health: h, errors, siteDrill,
+    ...rest, envText, health: h, errors, siteDrill, envLabel: rest.label, label: named || rest.label, labelInApp: Boolean(named),
     parts: eff.parts, partsManual: eff.manual, detectedParts: detected ? detected.parts : null, partsWhy: detected ? detected.why : null,
     refreshedAt: FieldValue.serverTimestamp(),
     totals: { sets: sets.length, inProject: projectSetsOnly.length, inVault: (inVault || []).length, bytes: totalBytes, storeBytes: storeTotal },
@@ -654,30 +656,20 @@ export const setStorageMode = onCall(opts, async (req) => {
   }
 });
 
-// Display name of one project (a brand name, for example): a pull request
-// changing PROJECT_LABEL in its backup.env, the one place the name lives.
+// Display name of one project (a brand name, for example), kept in the app
+// (config/names) and shown at once; it wins over PROJECT_LABEL in the
+// project's backup.env. An empty name goes back to the backup.env one.
 export const setLabel = onCall(opts, async (req) => {
   const by = await requireUser(req);
   const { project } = req.data || {};
   const label = String((req.data || {}).label || '').trim();
-  if (!label || label.length > 60 || /["'`$\\\n\r]/.test(label)) throw new HttpsError('invalid-argument', 'the name must be 1-60 characters, without quotes, $ or backslashes');
+  if (label.length > 60 || /[\u0000-\u001f<>]/.test(label)) throw new HttpsError('invalid-argument', 'the name must be at most 60 characters, without < or >');
   const p = await projectDoc(project);
-  const ref = await logStart(by, `rename to ${label}`, { project: p.projectId });
-  try {
-    const gh = github(GITHUB_TOKEN.value());
-    const cur = await gh.fileText(p.repo, 'backup-kit/backup.env');
-    const pr = await gh.pullRequest(p.repo, {
-      branch: 'yourbackupagent/display-name', message: `Backups: show this project as ${label}`,
-      title: `Backups: show this project as ${label}`,
-      body: `Sets \`PROJECT_LABEL="${label}"\` in \`backup-kit/backup.env\`. The YourBackupAgent app, its emails and the backup logs then call ${p.projectId} "${label}". Nothing else changes.\n\nOpened from the YourBackupAgent Manager by ${by}.`,
-      files: [{ path: 'backup-kit/backup.env', content: setEnvValue(cur.text, 'PROJECT_LABEL', `"${label}"`) }],
-    });
-    await logEnd(ref, 'succeeded', `pull request #${pr.number} (takes effect when merged)`, { link: pr.html_url });
-    return { pr: pr.html_url };
-  } catch (e) {
-    await logEnd(ref, 'failed', e.message);
-    throw new HttpsError('internal', e.message);
-  }
+  const shown = label || p.envLabel || (!p.labelInApp && p.label) || p.projectId;
+  await db.doc('config/names').set({ [p.projectId]: label ? label : FieldValue.delete() }, { merge: true });
+  await projectRef(p.projectId).update({ label: shown, labelInApp: Boolean(label) });
+  await db.collection('log').add({ at: FieldValue.serverTimestamp(), by, action: `rename to ${shown}`, project: p.projectId, status: 'succeeded', detail: label ? 'display name set in the app' : 'back to the name in backup.env' });
+  return { label: shown };
 });
 
 // What rebuild drills of one project bring up and check: a pull request

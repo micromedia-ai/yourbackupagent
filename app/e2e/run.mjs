@@ -116,6 +116,7 @@ async function main() {
     check('refresh reads the project from its repository backup.env', true);
     check('health is shown (newest run failed -> warning)', (await card.textContent()).includes('The newest run failed'), await card.textContent());
     check('drill slot shows who holds the drill project', await page.getByText('holds a drill of other-app').count() > 0);
+    check('drill slot links the rebuilt site when its site part passed', (await page.locator('#drill-site-link').first().getAttribute('href'))?.match(/^https:\/\/[a-z0-9-]*drill[a-z0-9-]*\.web\.app$/) != null);
     check('overview: 5 headline numbers and the nightly grid', await page.locator('.kpi').count() === 5 && await page.locator('.sgrid .cell.failed').count() >= 1);
     // Alerts live behind the bell; a hidden one stays hidden until its text changes.
     const badge = async () => (await page.locator('.bell-n').count()) ? Number(await page.locator('.bell-n').textContent()) : 0;

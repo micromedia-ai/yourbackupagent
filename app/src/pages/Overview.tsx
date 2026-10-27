@@ -21,6 +21,7 @@ export function DrillSlot() {
       <span className="label">Drill project</span> <code>{slot.project}</code>{' '}
       {!of ? <Pill tone="ok">free</Pill> : state === 'running' ? <Pill tone="warn">busy: drill of {of} running</Pill>
         : <Pill tone={state === 'passed' ? 'info' : 'bad'}>holds a drill of {of} ({state || 'unknown'}{l['drill-site'] ? `, site ${l['drill-site']}` : ''})</Pill>}
+      {of && state !== 'running' && l['drill-site'] === 'passed' && <> <a id="drill-site-link" href={`https://${slot.project}.web.app`} target="_blank" rel="noopener noreferrer">Open the rebuilt site ↗</a></>}
       {locked && <> <Pill tone="warn">busy: {lock!.action} of {lock!.project}, started {ago(tsDate(lock!.at))} by {lock!.by}</Pill></>}
       <span className="muted small"> · checked {ago(tsDate(slot.refreshedAt))}</span>
     </div>

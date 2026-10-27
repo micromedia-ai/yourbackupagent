@@ -640,6 +640,32 @@ export const setStorageMode = onCall(opts, async (req) => {
   }
 });
 
+// Display name of one project (a brand name, for example): a pull request
+// changing PROJECT_LABEL in its backup.env, the one place the name lives.
+export const setLabel = onCall(opts, async (req) => {
+  const by = await requireUser(req);
+  const { project } = req.data || {};
+  const label = String((req.data || {}).label || '').trim();
+  if (!label || label.length > 60 || /["'`$\\\n\r]/.test(label)) throw new HttpsError('invalid-argument', 'the name must be 1-60 characters, without quotes, $ or backslashes');
+  const p = await projectDoc(project);
+  const ref = await logStart(by, `rename to ${label}`, { project: p.projectId });
+  try {
+    const gh = github(GITHUB_TOKEN.value());
+    const cur = await gh.fileText(p.repo, 'backup-kit/backup.env');
+    const pr = await gh.pullRequest(p.repo, {
+      branch: 'yourbackupagent/display-name', message: `Backups: show this project as ${label}`,
+      title: `Backups: show this project as ${label}`,
+      body: `Sets \`PROJECT_LABEL="${label}"\` in \`backup-kit/backup.env\`. The YourBackupAgent app, its emails and the backup logs then call ${p.projectId} "${label}". Nothing else changes.\n\nOpened from the YourBackupAgent Manager by ${by}.`,
+      files: [{ path: 'backup-kit/backup.env', content: setEnvValue(cur.text, 'PROJECT_LABEL', `"${label}"`) }],
+    });
+    await logEnd(ref, 'succeeded', `pull request #${pr.number} (takes effect when merged)`, { link: pr.html_url });
+    return { pr: pr.html_url };
+  } catch (e) {
+    await logEnd(ref, 'failed', e.message);
+    throw new HttpsError('internal', e.message);
+  }
+});
+
 export const saveSettings = onCall(opts, async (req) => {
   const by = await requireUser(req);
   const { emails, defaultMinSets, repos: repoList, sizeWarnSetGB, sizeWarnTotalGB } = req.data || {};

@@ -293,6 +293,11 @@ async function main() {
     await page.getByText('Pull request opened. Merge it to apply from the next backup.').waitFor({ timeout: 30000 });
     const modeTree = fakes.calls.filter((c) => c.path === '/repos/dagangilat/foundation-next/git/trees').pop();
     check('choosing changed-only media copies opens a pull request with STORAGE_MODE=changed', modeTree && /STORAGE_MODE=changed/.test(modeTree.body.tree[0].content) && /KEEP_MIN_SETS=/.test(modeTree.body.tree[0].content));
+    await page.locator('#name-demo-fn').fill('Foundation Brand');
+    await page.locator('tr', { has: page.locator('#name-demo-fn') }).getByRole('button', { name: 'Open pull request' }).click();
+    await page.getByText('Pull request opened. Merge it, then refresh, to see the new name.').waitFor({ timeout: 30000 });
+    const nameTree = fakes.calls.filter((c) => c.path === '/repos/dagangilat/foundation-next/git/trees').pop();
+    check('renaming a project opens a pull request with PROJECT_LABEL="Foundation Brand"', nameTree && /PROJECT_LABEL="Foundation Brand"/.test(nameTree.body.tree[0].content) && /STORAGE_MODE=changed/.test(nameTree.body.tree[0].content));
     // Email alerts.
     const sent = () => fakes.emails.map((e) => e.subject);
     await page.getByRole('button', { name: 'Send me a test' }).click();

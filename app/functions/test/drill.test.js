@@ -47,6 +47,8 @@ test('the workflow guards production, builds, deploys what firebase.json has, ch
   assert.match(wf, /PARTS=\$\(val DRILL_PARTS\); HEALTH=\$\(val HEALTH_PATH\)/);
   assert.match(wf, /gcloud functions list --project "\$PRODUCTION"/);
   assert.match(wf, /::error::not running in the drill/);
+  // A 500 through the rewrite is the code failing on a key that is off in the drill: a warning only.
+  assert.match(wf, /elif \[ "\$code" = "500" \]; then echo "::warning::/);
   assert.match(wf, /tr '\\n' ' '/);
   const keyed = drillWorkflow({ projectId: 'p-app', label: 'P', facts, signIn: signIn('', 'K') });
   assert.doesNotMatch(keyed, /id-token/);

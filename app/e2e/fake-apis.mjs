@@ -25,8 +25,8 @@ export function startFakes(port = 4999) {
   const calls = [];
   const emails = [];
   const files = {
-    'dagangilat/foundation-next': { 'backup-kit/backup.env': ENV, 'firebase.json': '{}', '.firebaserc': '{"projects":{"prod":"demo-fn"}}' },
-    'dagangilat/your-content-creator': { 'firebase.json': '{}', '.firebaserc': '{"projects":{"default":"yourcontentcreator-f7ef5"}}' },
+    'dagangilat/foundation-next': { 'backup-kit/backup.env': ENV, 'firebase.json': '{"hosting":{"public":"dist","rewrites":[{"source":"/api/hello","function":"hello"}]},"functions":{"source":"functions"},"firestore":{}}', 'package.json': '{"scripts":{"build":"vite build"}}', '.firebaserc': '{"projects":{"prod":"demo-fn"}}' },
+    'dagangilat/your-content-creator': { 'firebase.json': '{"hosting":{"public":"dist","rewrites":[{"source":"/api/hello","function":"hello"}]},"functions":{"source":"functions"},"firestore":{}}', 'package.json': '{"scripts":{"build":"vite build"}}', '.firebaserc': '{"projects":{"default":"yourcontentcreator-f7ef5"}}' },
     'dagangilat/limorgilat.com': { 'backup-kit/backup.env': 'PROJECT_ID=limorgilat-com\n', 'app/firebase.json': '{}', 'app/.firebaserc': '{"projects":{"default":"limorgilat-com"}}' },
     'dagangilat/notes': {},
     'dagangilat/yourbackupagent': {
@@ -36,7 +36,7 @@ export function startFakes(port = 4999) {
       'app/runner/onboard.sh': tpl('app/runner/onboard.sh'),
     },
   };
-  let labels = { 'drill-of': 'other-app', 'drill-data': 'passed' };
+  let labels = { 'drill-of': 'other-app', 'drill-data': 'passed', 'drill-site': 'passed' };
   const server = http.createServer(async (req, res) => {
     let body = '';
     for await (const c of req) body += c;

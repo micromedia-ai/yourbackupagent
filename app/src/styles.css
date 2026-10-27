@@ -60,6 +60,7 @@ p { margin: 0; max-width: 72ch; }
 .linkish { background: none; border: 0; padding: 0; color: var(--accent); cursor: pointer; }
 .banner { display: flex; gap: 10px; align-items: center; padding: 8px 12px; border-radius: 8px; max-width: none; }
 .banner.ok { background: var(--okbg); color: var(--ok); } .banner.bad { background: var(--badbg); color: var(--bad); }
+.banner.warn { background: var(--warnbg); color: var(--warn); }
 .slot { font-size: .9rem; } .slot .label { font-weight: 600; }
 .tscroll { overflow-x: auto; }
 table { border-collapse: collapse; width: 100%; font-size: .88rem; }

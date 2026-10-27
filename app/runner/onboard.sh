@@ -58,19 +58,29 @@ setenv CI_SA "$CI_SA"
 
 step "2/7 The pull request: CI_SA and the workflow's sign-in"
 commit backup-kit/backup.env "$BACKUP_ENV" "Backups: CI_SA $CI_SA"
-WF="$(mktemp)"
-gh api "repos/$REPO/contents/.github/workflows/backup.yml?ref=$BRANCH" --jq .content | base64 -d >"$WF" \
-  || die "no .github/workflows/backup.yml on $BRANCH"
-awk -v p="$PROVIDER" -v sa="$CI_SA" '
-  /^permissions:/ { print; inperm = 1; next }
-  inperm && /^  id-token:/ { idtok = 1 }
-  inperm && !/^  / { if (!idtok) print "  id-token: write"; inperm = 0 }
-  /^ *credentials_json:/ { ind = substr($0, 1, index($0, "c") - 1); print ind "workload_identity_provider: " p; print ind "service_account: " sa; next }
-  /^ *workload_identity_provider:/ { ind = substr($0, 1, index($0, "w") - 1); print ind "workload_identity_provider: " p; next }
-  /^ *service_account:/ { ind = substr($0, 1, index($0, "s") - 1); print ind "service_account: " sa; next }
-  { print }' "$WF" >"$WF.new"
-if cmp -s "$WF" "$WF.new"; then echo "  workflow already signs in with Workload Identity"
-else commit .github/workflows/backup.yml "$WF.new" "Backups: sign in with Workload Identity (no stored key)"; fi
+# keyless <workflow>: switch one workflow on BRANCH to Workload Identity
+# (adds id-token: write); a missing optional one is skipped.
+keyless() {
+  local wf="$1" f
+  f="$(mktemp)"
+  if ! gh api "repos/$REPO/contents/.github/workflows/$wf?ref=$BRANCH" --jq .content 2>/dev/null | base64 -d >"$f" || [ ! -s "$f" ]; then
+    [ "${2:-}" = optional ] && return 0
+    die "no .github/workflows/$wf on $BRANCH"
+  fi
+  awk -v p="$PROVIDER" -v sa="$CI_SA" '
+    /^permissions:/ { print; inperm = 1; next }
+    inperm && /^  id-token:/ { idtok = 1 }
+    inperm && !/^  / { if (!idtok) print "  id-token: write"; inperm = 0 }
+    /^ *credentials_json:/ { ind = substr($0, 1, index($0, "c") - 1); print ind "workload_identity_provider: " p; print ind "service_account: " sa; next }
+    /^ *workload_identity_provider:/ { ind = substr($0, 1, index($0, "w") - 1); print ind "workload_identity_provider: " p; next }
+    /^ *service_account:/ { ind = substr($0, 1, index($0, "s") - 1); print ind "service_account: " sa; next }
+    { print }' "$f" >"$f.new"
+  if cmp -s "$f" "$f.new"; then echo "  $wf already signs in with Workload Identity"
+  else commit ".github/workflows/$wf" "$f.new" "Backups: $wf signs in with Workload Identity (no stored key)"; fi
+}
+keyless backup.yml
+# The site part of rebuild drills, when the pull request carries one.
+keyless "$(envv DRILL_WORKFLOW | grep . || echo rebuild-drill.yml)" optional
 
 step "3/7 Backup bucket and roles"
 kit setup || die "setup failed"

@@ -19,6 +19,7 @@ import { parseEnv, projectSettings, setEnvValue } from './lib/env.js';
 import { canDelete, health, prunePlan, RUN_ID } from './lib/sets.js';
 import { lockBlocks, endsLock, LOCK_HOURS } from './lib/drilllock.js';
 import { firebaseProject, pickDeploySecret, kitFiles, setupCommands, TEMPLATE_PATHS, KIT_REPO } from './lib/protect.js';
+import { readSiteFacts, drillWorkflow, signIn } from './lib/drill.js';
 import { sendMail } from './lib/mail.js';
 import { createOAuth, OAuthError, resourceMetadata, authServerMetadata, resourceUrl } from './lib/oauth.js';
 import { handleMcp } from './lib/mcp.js';
@@ -140,8 +141,10 @@ async function refreshProject(gh, repo, s = null) {
     ? health(projectSetsOnly, { maxAgeHours: p.maxAgeHours, offsite: Boolean(p.offsiteBucket), maxSetBytes: (s.sizeWarnSetGB || 0) * 1e9, maxTotalBytes: (s.sizeWarnTotalGB || 0) * 1e9, totalBytes })
     : { level: 'bad', text: 'Cannot read the backup bucket' };
   const { envText, ...rest } = p;
+  // Without a rebuild-drill workflow, rebuild drills restore data only.
+  const siteDrill = Boolean(await gh.fileText(p.repo, `.github/workflows/${p.drillWorkflow}`).catch(() => true));
   batch.set(ref, {
-    ...rest, envText, health: h, errors, refreshedAt: FieldValue.serverTimestamp(),
+    ...rest, envText, health: h, errors, siteDrill, refreshedAt: FieldValue.serverTimestamp(),
     totals: { sets: sets.length, inProject: projectSetsOnly.length, inVault: (inVault || []).length, bytes: totalBytes, storeBytes: storeTotal },
     prunePreview: inProject ? prunePlan(projectSetsOnly, { keepMin: p.keepMinSets, keepDays: p.keepDays }) : [],
   }, { merge: false });
@@ -508,10 +511,14 @@ export const protect = onCall(opts, async (req) => {
     const secret = pickDeploySecret(await gh.secretNames(repo).catch(() => []));
     let files = kitFiles({ repo, projectId, label: label || projectId, secret, kitRef, templates: { wrapper: wrapper.text, env: setEnvValue(env.text, 'KEEP_MIN_SETS', String(s.defaultMinSets)), workflow: workflow.text } });
     if (existing) files = files.filter((f) => f.path !== 'backup-kit/backup.env');
+    // The site part of rebuild drills, made from the repo's firebase.json
+    // (onboarding switches its sign-in to Workload Identity with backup.yml's).
+    const drill = await siteDrillFile(gh, repo, projectId, label || projectId, files.find((f) => f.path === '.github/workflows/backup.yml')?.content || '', secret);
+    if (drill) files.push(drill);
     const pr = await gh.pullRequest(repo, {
       branch: 'yourbackupagent/protect', message: `Back up ${projectId} with YourBackupAgent ${kitRef}`,
       title: `Backups with YourBackupAgent (${projectId})`,
-      body: protectBody(repo, projectId, kitRef, secret, existing),
+      body: protectBody(repo, projectId, kitRef, secret, existing, drill),
       files,
     });
     if (!s.repos.includes(repo)) await db.doc('config/settings').set({ repos: [...s.repos, repo] }, { merge: true });
@@ -668,19 +675,57 @@ export function pickNewestTag(names) {
   return v.length ? v[0].n : '';
 }
 
-function protectBody(repo, projectId, kitRef, secret, existing) {
+function protectBody(repo, projectId, kitRef, secret, existing, drill) {
   return [
     `Adds daily backups of Firebase project \`${projectId}\` with [YourBackupAgent](https://github.com/${KIT_REPO}) ${kitRef}:`,
     '',
     '- `backup-kit/backup.sh`: runs the kit version pinned in `backup-kit/backup.env`',
     existing ? '- `backup-kit/backup.env` already exists and is left as it is' : '- `backup-kit/backup.env`: this project\'s settings (names only, no secrets). Check `CI_SA` and the bucket names.',
     `- \`.github/workflows/backup.yml\`: back up at 02:00 UTC every day, restore drill on Sundays (signs in to Google ${secret ? `with the secret \`${secret}\`` : 'with the set-up below'})`,
+    drill ? `- \`.github/workflows/${DRILL_FILE}\`: the site part of rebuild drills, made from this repo's \`firebase.json\`: builds the site from main and deploys it into the drill project (keys empty, scheduled jobs paused), then checks it answers. Never touches \`${projectId}\`.` : `- \`.github/workflows/${DRILL_FILE}\` already exists and is left as it is`,
     '',
-    'Before merging, set it up once, either in the YourBackupAgent app (Protect, then **Set it up here** with a Google sign-in; no stored key) or on your own computer from a checkout of dagangilat/yourbackupagent: `./onboard.sh ' + repo + '`. Both make the backup account, the buckets and protection, and take the first backup. Otherwise the first nightly backup fails. A `rebuild-drill.yml` that deploys this site into the drill project is project-specific and comes separately (template: `templates/rebuild-drill.yml` in the kit).',
+    'Before merging: press **Set it up here** on the Protect page of the YourBackupAgent Manager (or run `./onboard.sh ' + repo + '` from a checkout of dagangilat/yourbackupagent). It sets up the buckets, protection and keyless GitHub sign-in, and takes the first backup. Otherwise the first nightly backup fails.',
     '',
     'Opened from the YourBackupAgent Manager.',
   ].join('\n');
 }
+
+// The site part of rebuild drills for a repo without one, made from its
+// firebase.json; null when it has one already or no firebase.json.
+const DRILL_FILE = 'rebuild-drill.yml';
+async function siteDrillFile(gh, repo, projectId, label, backupYml, secret) {
+  if (await gh.fileText(repo, `.github/workflows/${DRILL_FILE}`)) return null;
+  const facts = await readSiteFacts((pth, ref) => gh.fileText(repo, pth, ref));
+  // Nothing to bring up without a Hosting site.
+  if (!facts || !facts.only.some((o) => o.startsWith('hosting'))) return null;
+  return { path: `.github/workflows/${DRILL_FILE}`, content: drillWorkflow({ projectId, label, facts, signIn: signIn(backupYml, secret) }) };
+}
+
+// A pull request adding the site part of rebuild drills to a protected
+// project that has none (its drills restore data only until it is merged).
+export const addSiteDrill = onCall(opts, async (req) => {
+  const by = await requireUser(req);
+  const p = await projectDoc((req.data || {}).project);
+  const ref = await logStart(by, 'add site drill', { project: p.projectId });
+  try {
+    const gh = github(GITHUB_TOKEN.value());
+    const backupYml = (await gh.fileText(p.repo, `.github/workflows/${BACKUP_WORKFLOW}`))?.text || '';
+    const secret = /secrets\.([A-Z0-9_]+)/.exec(backupYml)?.[1] || '';
+    const file = await siteDrillFile(gh, p.repo, p.projectId, p.label || p.projectId, backupYml, secret);
+    if (!file) throw new Error(`${p.repo} already has .github/workflows/${DRILL_FILE}, or no firebase.json`);
+    const pr = await gh.pullRequest(p.repo, {
+      branch: 'yourbackupagent/site-drill', message: 'Backups: rebuild drills deploy the site too',
+      title: 'Backups: rebuild drills deploy the site too',
+      body: `Adds \`.github/workflows/${DRILL_FILE}\`, made from this repo's \`firebase.json\`. A YourBackupAgent rebuild drill (Restore… on a backup set) then builds the site from main and deploys it into the drill project after restoring the data (keys empty, scheduled jobs paused) and checks it answers. It never touches \`${p.projectId}\`. Until this is merged, rebuild drills of ${p.label || p.projectId} restore data only.\n\nOpened from the YourBackupAgent Manager by ${by}.`,
+      files: [file],
+    });
+    await logEnd(ref, 'succeeded', `pull request #${pr.number} (takes effect when merged)`, { link: pr.html_url });
+    return { pr: pr.html_url };
+  } catch (e) {
+    await logEnd(ref, 'failed', e.message);
+    throw new HttpsError('internal', e.message);
+  }
+});
 
 // ---- MCP connector (lib/mcp.js, lib/oauth.js) ----------------------------------
 // https://<app>/mcp for an AI assistant such as Claude, signed in with OAuth as

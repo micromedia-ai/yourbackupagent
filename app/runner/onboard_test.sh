@@ -32,6 +32,11 @@ H
 chmod +x "$T/bin/"*
 mkdir -p "$T/gh/.github/workflows" "$T/gh/backup-kit"
 sed 's/DEPLOY_KEY_SECRET_NAME/YOURBACKUPAGENT_SA_KEY/' "$ROOT/templates/backup.yml" >"$T/gh/.github/workflows/backup.yml"
+# The site part of rebuild drills, as the app makes it before set-up (deploy key sign-in).
+(cd "$ROOT/app/functions" && node -e '
+  import("./lib/drill.js").then((m) => process.stdout.write(m.drillWorkflow({ projectId: "demo-app", label: "Demo",
+    facts: m.siteFacts(JSON.stringify({ hosting: { public: "dist" }, functions: { source: "functions" }, firestore: {} }), { packages: { ".": { scripts: { build: "vite build" } } } }),
+    signIn: m.signIn("", "YOURBACKUPAGENT_SA_KEY") })));') >"$T/gh/.github/workflows/rebuild-drill.yml"
 cat >"$T/backup.env" <<'E'
 PROJECT_ID=demo-app
 REPO=me/site
@@ -67,6 +72,8 @@ check "CI_SA is committed to the pull request" 'grep -qx "CI_SA=yourbackupagent-
 W="$T/gh/.github/workflows/backup.yml"
 check "the workflow signs in with Workload Identity, no stored key" '! grep -q credentials_json "$W" && grep -q "workload_identity_provider: projects/123456/locations/global/workloadIdentityPools/yourbackupagent/providers/github" "$W" && grep -q "service_account: yourbackupagent-ci@demo-app.iam.gserviceaccount.com" "$W"'
 check "the workflow may ask GitHub for its sign-in token" '[ "$(sed -n "/^permissions:/,/^[^ ]/p" "$W" | grep -c "id-token: write")" = 1 ]'
+D="$T/gh/.github/workflows/rebuild-drill.yml"
+check "the site drill workflow signs in with Workload Identity too" '! grep -q credentials_json "$D" && grep -q "workload_identity_provider: projects/123456/locations/global/workloadIdentityPools/yourbackupagent/providers/github" "$D" && [ "$(sed -n "/^permissions:/,/^[^ ]/p" "$D" | grep -c "id-token: write")" = 1 ]'
 check "the app runner may read and prune the backup bucket (as the owner)" 'grep -q "storage buckets add-iam-policy-binding gs://demo-app-backups --member=serviceAccount:runner@app.iam.gserviceaccount.com --role=roles/storage.objectAdmin" "$T/tokenfile.log"'
 check "the vault grants are made as the vault sign-in" 'grep -q -- "--access-token-file=$T/vault.tok storage buckets add-iam-policy-binding gs://demo-vault-offsite --member=serviceAccount:runner@app.iam.gserviceaccount.com --role=roles/storage.objectViewer" "$C" && grep -q -- "--access-token-file=$T/vault.tok projects add-iam-policy-binding demo-drill --member=serviceAccount:runner@app.iam.gserviceaccount.com --role=roles/owner" "$C"'
 check "the project owner may copy the first backup off-site" 'grep -q -- "--access-token-file=$T/vault.tok storage buckets add-iam-policy-binding gs://demo-vault-offsite --member=user:owner@example.com --role=roles/storage.objectCreator" "$C"'
@@ -77,6 +84,7 @@ check "no token in the output" '! grep -q ya29 "$T/out"'
 go; rc=$?
 check "a second setup succeeds and leaves the workflow as it is" '[ $rc = 0 ] && grep -q "already signs in with Workload Identity" "$T/out" && ! grep -q "contents/.github/workflows/backup.yml --input" "$T/gh.log"'
 check "a second setup keeps one id-token line" '[ "$(grep -c "id-token: write" "$W")" = 1 ]'
+check "a second setup leaves the site drill workflow as it is" '! grep -q "contents/.github/workflows/rebuild-drill.yml --input" "$T/gh.log" && [ "$(grep -c "id-token: write" "$D")" = 1 ]'
 
 printf '' >"$T/owner.tok"
 go; rc=$?

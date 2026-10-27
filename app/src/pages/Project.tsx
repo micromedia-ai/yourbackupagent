@@ -45,7 +45,7 @@ export function ProjectPage({ projectId, user }: { projectId: string; user: User
         </div>
         <div className="row wrap">
           <button className="btn primary" disabled={!!busy} onClick={() => act('backup', { action: 'backup' }, 'Backup started in GitHub. It shows up here when it finishes (press Refresh).')}>Back up now</button>
-          <button className="btn" disabled={!!busy} onClick={() => act('drill', { action: 'drill-here' }, 'Restore drill of the newest set started in GitHub.')}>Restore drill</button>
+          <button className="btn" title="Restores the newest set into a temporary database inside the project and compares every count. Data only: for the site too, use Restore… on a set." disabled={!!busy} onClick={() => act('drill', { action: 'drill-here' }, 'Data check of the newest set started in GitHub (a temporary database, every count compared; no site). For a full rebuild with the site, use Restore… on a set.')}>Check newest set</button>
           {holdsDrill && <button className="btn" disabled={!!busy} onClick={() => act('wipe', { action: 'cleanup-drill' }, 'Wiping the drill project. The log shows when it is done.')}>Wipe drill project</button>}
         </div>
       </div>
@@ -58,6 +58,15 @@ export function ProjectPage({ projectId, user }: { projectId: string; user: User
         {p.offsiteBucket ? <Pill tone="ok">Off-site: {p.offsiteBucket}</Pill> : <Pill tone="warn">No off-site copy</Pill>}
       </div>
       <DrillSlot />
+      {p.siteDrill === false && (
+        <div className="banner warn row between wrap">
+          <span>Rebuild drills of {p.label} restore data only: {p.repo} has no site drill workflow yet.</span>
+          <button className="btn small" id="add-site-drill" disabled={!!busy} onClick={() => run('site drill', async () => {
+            const r = await call<{ pr: string }>('addSiteDrill', { project: p.projectId });
+            return { text: 'Pull request opened: the site drill, made from the repo\'s firebase.json. Merge it, then Restore… on a set.', link: r.pr };
+          })}>Add site drill</button>
+        </div>
+      )}
       {p.errors?.map((e) => <p key={e} className="banner bad">{e}</p>)}
       {error && <p className="banner bad">{error}</p>}
 
@@ -213,7 +222,7 @@ function RestoreDialog({ p, set, holder, newestGood, onClose }: { p: Project; se
       <p className="small muted">{p.label} · {num(set.docs)} documents · {num(set.files)} files · {num(set.users)} users</p>
       <div className="radios">
         <label className={`radio ${target === 'drill' ? 'on' : ''}`}><input type="radio" name="target" id="t-drill" checked={target === 'drill'} onChange={() => setTarget('drill')} disabled={!set.inVault} />
-          <span><b>Into the drill project</b> <span className="small muted">({p.drillProject})</span><br /><span className="small">Wipes it, restores this set from the vault, checks every count, then deploys the site there from main. Production is not touched. {set.inVault ? '' : 'This set has no vault copy.'}</span></span></label>
+          <span><b>Into the drill project</b> <span className="small muted">({p.drillProject})</span><br /><span className="small">Wipes it, restores this set from the vault, checks every count, {p.siteDrill === false ? 'and stops there (no site drill workflow yet).' : 'then deploys the site there from main.'} Production is not touched. {set.inVault ? '' : 'This set has no vault copy.'}</span></span></label>
         <label className={`radio ${target === 'temp' ? 'on' : ''}`}><input type="radio" name="target" id="t-temp" checked={target === 'temp'} onChange={() => setTarget('temp')} disabled={set.id !== newestGood} />
           <span><b>Into a temporary database</b><br /><span className="small">Restores inside {p.projectId} into a drill-* database, compares every count, deletes it. {set.id === newestGood ? '' : 'Only for the newest good set.'}</span></span></label>
         <label className={`radio ${target === 'prod' ? 'on' : ''}`}><input type="radio" name="target" id="t-prod" checked={target === 'prod'} onChange={() => setTarget('prod')} />

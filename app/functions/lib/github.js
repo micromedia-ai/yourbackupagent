@@ -1,12 +1,34 @@
 // GitHub REST calls with the app's token (secret GITHUB_TOKEN: a fine-grained
-// token for dagangilat's repositories with Contents, Pull requests, Actions
-// and Workflows read/write, Secrets read-only, Metadata read).
+// token with Contents, Pull requests, Actions and Workflows read/write, Secrets
+// read-only, Metadata read).
+//
+// A fine-grained token reaches one owner only. To protect repos of more than one
+// owner (dagangilat and the micromedia-ai organization), GITHUB_TOKEN may hold
+// one token per owner: "dagangilat=github_pat_...;micromedia-ai=github_pat_...".
+// Calls on /repos/<owner>/... use that owner's token; anything else (and an
+// owner without its own token) uses the first one. A plain token works as before.
 
 // GITHUB_API: only for the offline end-to-end test (a fake GitHub).
 const API = process.env.GITHUB_API || 'https://api.github.com';
 
-export function github(token, fetchImpl = fetch) {
-  async function call(method, path, body) {
+/** "owner=token;owner2=token2" or a plain token -> [{ owner, token }] (owner null for a plain token). */
+export function parseTokens(spec) {
+  const parts = String(spec || '').split(/[;\n]/).map((x) => x.trim()).filter(Boolean);
+  return parts.map((p) => {
+    const m = p.match(/^([\w.-]+)=(.+)$/);
+    return m ? { owner: m[1].toLowerCase(), token: m[2].trim() } : { owner: null, token: p };
+  });
+}
+
+export function github(tokenSpec, fetchImpl = fetch) {
+  const tokens = parseTokens(tokenSpec);
+  const fallback = tokens[0] ? tokens[0].token : '';
+  function tokenFor(path) {
+    const m = path.match(/^\/repos\/([^/]+)\//);
+    const t = m && tokens.find((x) => x.owner === m[1].toLowerCase());
+    return t ? t.token : fallback;
+  }
+  async function call(method, path, body, token = tokenFor(path)) {
     const res = await fetchImpl(`${API}${path}`, {
       method,
       headers: {
@@ -48,15 +70,18 @@ export function github(token, fetchImpl = fetch) {
       const t = await call('GET', `/repos/${repo}/git/trees/${encodeURIComponent(b)}?recursive=1`).catch((e) => (e.status === 404 || e.status === 409 ? { tree: [] } : Promise.reject(e)));
       return (t.tree || []).map((x) => x.path);
     },
-    // Every repository the token can see, owned by the user.
+    // Every repository the tokens can see, owned by the user or by an organization (one list, newest push first).
     async repos() {
       const out = [];
-      for (let page = 1; page <= 10; page++) {
-        const batch = await call('GET', `/user/repos?per_page=100&page=${page}&affiliation=owner&sort=pushed`);
-        out.push(...batch);
-        if (batch.length < 100) break;
+      const seen = new Set();
+      for (const { token } of tokens.length ? tokens : [{ token: '' }]) {
+        for (let page = 1; page <= 10; page++) {
+          const batch = await call('GET', `/user/repos?per_page=100&page=${page}&affiliation=owner,organization_member&sort=pushed`, undefined, token);
+          for (const r of batch) if (!seen.has(r.full_name)) { seen.add(r.full_name); out.push(r); }
+          if (batch.length < 100) break;
+        }
       }
-      return out;
+      return out.sort((a, b) => String(b.pushed_at || '').localeCompare(String(a.pushed_at || '')));
     },
     dispatch: (repo, workflow, ref, inputs) =>
       call('POST', `/repos/${repo}/actions/workflows/${encodeURIComponent(workflow)}/dispatches`, { ref, inputs }),

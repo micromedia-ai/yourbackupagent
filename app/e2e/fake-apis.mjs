@@ -29,7 +29,7 @@ export function startFakes(port = 4999) {
     'dagangilat/your-content-creator': { 'firebase.json': '{"hosting":{"public":"dist","rewrites":[{"source":"/api/hello","function":"hello"}]},"functions":{"source":"functions"},"firestore":{}}', 'package.json': '{"scripts":{"build":"vite build"}}', '.firebaserc': '{"projects":{"default":"yourcontentcreator-f7ef5"}}' },
     'dagangilat/limorgilat.com': { 'backup-kit/backup.env': 'PROJECT_ID=limorgilat-com\n', 'app/firebase.json': '{}', 'app/.firebaserc': '{"projects":{"default":"limorgilat-com"}}' },
     'dagangilat/notes': {},
-    'dagangilat/yourbackupagent': {
+    'micromedia-ai/yourbackupagent': {
       'templates/backup-kit-wrapper.sh': tpl('templates/backup-kit-wrapper.sh'),
       'templates/backup.env.example': tpl('templates/backup.env.example'),
       'templates/backup.yml': tpl('templates/backup.yml'),
@@ -56,7 +56,7 @@ export function startFakes(port = 4999) {
     }
     if (p.match(/\/actions\/workflows\/[^/]+\/dispatches$/)) return send(204);
     if (p.match(/\/actions\/secrets$/)) return send(200, { secrets: [{ name: 'FIREBASE_SERVICE_ACCOUNT_YCC' }] });
-    if (p.match(/^\/repos\/dagangilat\/yourbackupagent\/tags$/)) return send(200, [{ name: 'v1' }, { name: 'v1.1' }]);
+    if (p.match(/^\/repos\/micromedia-ai\/yourbackupagent\/tags$/)) return send(200, [{ name: 'v1' }, { name: 'v1.1' }]);
     if ((m = p.match(/^\/repos\/([^/]+\/[^/]+)$/))) return send(200, { default_branch: 'main', full_name: m[1] });
     if (p.match(/\/git\/ref\/heads\//)) return send(200, { object: { sha: 'base' } });
     if (p.match(/\/git\/commits\/base$/)) return send(200, { tree: { sha: 'tree0' } });

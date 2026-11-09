@@ -55,7 +55,7 @@ fi
 
 auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
 if ! git -c http.extraHeader="Authorization: Basic $auth" clone -q --depth 1 --branch "$REF" \
-    https://github.com/dagangilat/yourbackupagent "$W/kit" 2>"$W/clone.err"; then
+    https://github.com/micromedia-ai/yourbackupagent "$W/kit" 2>"$W/clone.err"; then
   report failed "could not fetch the kit at $REF"
   exit 1
 fi

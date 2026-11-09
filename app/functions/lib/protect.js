@@ -2,7 +2,7 @@
 // filled in from its .firebaserc, plus the one-time commands to run.
 import { setEnvValue } from './env.js';
 
-const KIT_REPO = 'dagangilat/yourbackupagent';
+const KIT_REPO = 'micromedia-ai/yourbackupagent';
 
 // firebaseProject(.firebaserc text) -> the prod (or default) project id.
 export function firebaseProject(rcText) {
@@ -42,7 +42,7 @@ export function kitFiles({ repo, projectId, label, secret, kitRef, templates }) 
     `# Backup settings for ${label} (Firebase project ${projectId}).`);
   const workflow = templates.workflow
     .replace(/DEPLOY_KEY_SECRET_NAME/g, secret || 'YOURBACKUPAGENT_SA_KEY')
-    .replace(/dagangilat\/yourbackupagent@v[0-9.]+/g, `${KIT_REPO}@${kitRef}`)
+    .replace(/(?:dagangilat|micromedia-ai)\/yourbackupagent@v[0-9.]+/g, `${KIT_REPO}@${kitRef}`)
     .replace(/^# Copy to \.github\/workflows\/backup\.yml and set the deploy key secret name\.\n/m, '');
   return [
     { path: 'backup-kit/backup.sh', content: templates.wrapper, executable: true },
@@ -54,7 +54,7 @@ export function kitFiles({ repo, projectId, label, secret, kitRef, templates }) 
 // One command does the whole one-time setup (onboard.sh in the kit repo).
 export function setupCommands(repo) {
   return [
-    { what: 'Once per computer: a copy of the kit repository', cmd: 'gh repo clone dagangilat/yourbackupagent' },
+    { what: 'Once per computer: a copy of the kit repository', cmd: 'gh repo clone micromedia-ai/yourbackupagent' },
     { what: 'Then, from that folder: log in, GitHub key, buckets, protection, first backup, app access, rebuild drill, merge', cmd: `cd yourbackupagent && git pull -q && ./onboard.sh ${repo}` },
   ];
 }

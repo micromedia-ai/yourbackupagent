@@ -25,7 +25,7 @@ test('kit files are filled in from the templates', () => {
     ['v1.1', 'yourcontentcreator-f7ef5', 'Your Content Creator', 'dagangilat/your-content-creator', 'yourcontentcreator-f7ef5-backups', 'yourbackupagent-yourcontentcreator', 'yourbackupagent-drill']);
   const wf = files.find((f) => f.path === '.github/workflows/backup.yml').content;
   assert.match(wf, /secrets\.FIREBASE_SERVICE_ACCOUNT_YCC/);
-  assert.match(wf, /dagangilat\/yourbackupagent@v1\.1\n/); assert.doesNotMatch(wf, /@v1\n/);
+  assert.match(wf, /micromedia-ai\/yourbackupagent@v1\.1\n/); assert.doesNotMatch(wf, /@v1\n/);
   assert.ok(files.find((f) => f.path === 'backup-kit/backup.sh').executable);
 });
 

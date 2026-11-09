@@ -6,6 +6,9 @@
 #
 #   app/setup.sh create            project, Firebase, Firestore, the runner account
 #   app/setup.sh token             store the GitHub token the app uses (asks for it)
+#   app/setup.sh org OWNER         after moving repos to the GitHub organization OWNER:
+#                                  add OWNER's token next to the one stored (asks for it),
+#                                  rename the moved repos in Settings, then deploy
 #   app/setup.sh runner            build and deploy the kit runner job
 #   app/setup.sh grant PROJECT_ID  let the app read and prune PROJECT_ID's backups,
 #                                  read its vault copies and use the drill project
@@ -194,6 +197,82 @@ cmd_grant() {
   say "  Done. In the app: Settings -> Repositories must list $(env_of "$env" REPO); then Overview -> Refresh now."
 }
 
+# A GitHub token is stored as "owner=token;owner=token" (app/functions/lib/github.js parseTokens).
+gh_login() { # gh_login TOKEN -> the token's account login, or nothing
+  curl -fsS -H "Authorization: Bearer $1" https://api.github.com/user 2>/dev/null | jq -r '.login // empty' || true
+}
+gh_status() { # gh_status TOKEN owner/name -> HTTP status of GET /repos/owner/name
+  curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $1" "https://api.github.com/repos/$2" || true
+}
+
+cmd_org() {
+  local org="${1:-}" cur new spec part o t repos fs url tokenhdr body r name changed=0 out="" st
+  [ -n "$org" ] || die "usage: app/setup.sh org OWNER   (e.g. app/setup.sh org micromedia-ai)"
+  need curl "it comes with macOS"
+  info "Move the app to repos under $org (project $APP_PROJECT)"
+  cur="$("${G[@]}" secrets versions access latest --secret GITHUB_TOKEN --project "$APP_PROJECT" 2>/dev/null || true)"
+  [ -n "$cur" ] || die "no GITHUB_TOKEN stored yet: run app/setup.sh token"
+
+  # 1. The stored token, written as owner=token pairs, plus a token for $org.
+  spec=""
+  local IFS_OLD="$IFS"; IFS=';'
+  for part in $cur; do
+    IFS="$IFS_OLD"
+    part="$(printf '%s' "$part" | tr -d ' \n')"
+    [ -n "$part" ] || { IFS=';'; continue; }
+    case "$part" in
+      *=*) o="${part%%=*}"; t="${part#*=}" ;;
+      *) t="$part"; o="$(gh_login "$t")"; [ -n "$o" ] || die "the stored token no longer works with GitHub (expired?): run app/setup.sh token" ;;
+    esac
+    o="$(printf '%s' "$o" | tr '[:upper:]' '[:lower:]')"
+    if [ "$o" = "$(printf '%s' "$org" | tr '[:upper:]' '[:lower:]')" ]; then
+      say "  A token for $org is already stored; it will be replaced by the one you paste."
+    else
+      spec="${spec:+$spec;}$o=$t"; say "  Keeping the stored token for $o."
+    fi
+    IFS=';'
+  done
+  IFS="$IFS_OLD"
+  say "  Token for $org: a fine-grained token at https://github.com/settings/personal-access-tokens/new"
+  say "  Resource owner $org, repos to protect + yourbackupagent; Contents, Pull requests, Actions,"
+  say "  Workflows: Read and write; Secrets, Metadata: Read-only."
+  printf '  Paste the %s token (not shown): ' "$org"
+  read -rs new; printf '\n'
+  new="$(printf '%s' "$new" | tr -d ' \n')"
+  [ -n "$new" ] || die "no token"
+  st="$(gh_status "$new" "$org/yourbackupagent")"
+  [ "$st" = 200 ] || die "that token can't read $org/yourbackupagent (GitHub said $st): check its resource owner and repos"
+  spec="${spec:+$spec;}$org=$new"
+  printf '%s' "$spec" | put_secret GITHUB_TOKEN
+  say "  Stored GITHUB_TOKEN with tokens for: $(printf '%s' "$spec" | tr ';' '\n' | sed 's/=.*//' | paste -sd ' ' -)"
+
+  # 2. Settings: repos that now live under $org get their new name.
+  info "Settings: repos moved to $org"
+  url="https://firestore.googleapis.com/v1/projects/$APP_PROJECT/databases/(default)/documents/config/settings"
+  tokenhdr="Authorization: Bearer $("${G[@]}" auth print-access-token)"
+  fs="$(curl -fsS -H "$tokenhdr" "$url" 2>/dev/null || true)"
+  repos="$(printf '%s' "$fs" | jq -r '.fields.repos.arrayValue.values[]?.stringValue' 2>/dev/null || true)"
+  [ -n "$repos" ] || say "  No repo list saved in Settings yet (the app shows its default); nothing to rename."
+  for r in $repos; do
+    name="${r#*/}"
+    if [ "${r%%/*}" != "$org" ] && [ "$(gh_status "$new" "$org/$name")" = 200 ]; then
+      say "  $r -> $org/$name"; out="${out:+$out }$org/$name"; changed=1
+    else
+      say "  $r (unchanged)"; out="${out:+$out }$r"
+    fi
+  done
+  if [ "$changed" = 1 ]; then
+    body="$(printf '%s\n' $out | awk '!seen[$0]++' | jq -R . | jq -s '{fields:{repos:{arrayValue:{values:map({stringValue:.})}}}}')"
+    say "  + curl -X PATCH .../config/settings?updateMask.fieldPaths=repos (Settings repo list)"
+    curl -fsS -o /dev/null -X PATCH -H "$tokenhdr" -H 'Content-Type: application/json' \
+      "$url?updateMask.fieldPaths=repos" -d "$body" || die "could not save Settings; change the repos by hand in the app's Settings"
+  fi
+
+  # 3. Deploy, so the app reads the new token.
+  cmd_deploy
+  say "  Then open the dashboard and press Refresh: the moved projects should show today's backup."
+}
+
 cmd_deploy() {
   info "Deploy the manager app to $APP_PROJECT"
   need firebase "npm install -g firebase-tools; firebase login:add $OWNER"
@@ -223,10 +302,11 @@ cmd_status() {
 case "${1:-}" in
   create) cmd_create ;;
   token) cmd_token ;;
+  org) shift; cmd_org "${1:-}" ;;
   runner) cmd_runner ;;
   grant) shift; cmd_grant "${1:-}" ;;
   email) shift; cmd_email "$@" ;;
   deploy) cmd_deploy ;;
   status) cmd_status ;;
-  *) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+  *) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac

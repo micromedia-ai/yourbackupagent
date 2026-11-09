@@ -85,6 +85,13 @@ export function canDelete(sets, ids, keepMin) {
 
 const gb = (n) => `${(n / 1e9).toFixed(n >= 1e10 ? 0 : 1)} GB`;
 
+// A project whose Backup workflow is turned off in GitHub (Pause in the app):
+// grey, no alerts, the last health kept underneath for reference.
+export function pausedHealth(h, since = null) {
+  const { level, text, ...rest } = h || {};
+  return { ...rest, level: 'paused', text: 'Backups paused', pausedSince: since, before: level ? { level, text } : null };
+}
+
 // health(sets, {maxAgeHours, offsite, now, maxSetBytes, maxTotalBytes, totalBytes})
 //   -> {level: ok|warn|bad, text, notes, ...}. The size limits are "watch"
 //   levels: growing past them is a note for the bell, not a health problem

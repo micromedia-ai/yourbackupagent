@@ -83,6 +83,14 @@ export function github(tokenSpec, fetchImpl = fetch) {
       }
       return out.sort((a, b) => String(b.pushed_at || '').localeCompare(String(a.pushed_at || '')));
     },
+    // A workflow's state: "active", "disabled_manually", ... or null when the file is not there.
+    workflowState: (repo, workflow) =>
+      call('GET', `/repos/${repo}/actions/workflows/${encodeURIComponent(workflow)}`)
+        .then((w) => ({ state: w.state, updatedAt: w.updated_at || null }))
+        .catch((e) => (e.status === 404 ? null : Promise.reject(e))),
+    // Turn a workflow's timer (and dispatches) on or off in GitHub; the file stays as it is.
+    setWorkflow: (repo, workflow, on) =>
+      call('PUT', `/repos/${repo}/actions/workflows/${encodeURIComponent(workflow)}/${on ? 'enable' : 'disable'}`),
     dispatch: (repo, workflow, ref, inputs) =>
       call('POST', `/repos/${repo}/actions/workflows/${encodeURIComponent(workflow)}/dispatches`, { ref, inputs }),
     runs: (repo, workflow, n = 20) =>

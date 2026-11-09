@@ -67,7 +67,7 @@ export function Kpis({ days = 30 }: { days?: number }) {
   const worst = a.oldestNewestGoodHours;
   return (
     <div className="kpis">
-      <Kpi label="Projects" value={`${a.healthy} of ${a.projects}`} sub="healthy" tone={a.healthy === a.projects ? 'ok' : 'warn'} />
+      <Kpi label="Projects" value={`${a.healthy} of ${a.projects - a.paused}`} sub={a.paused ? `healthy · ${a.paused} paused` : 'healthy'} tone={a.healthy === a.projects - a.paused ? 'ok' : 'warn'} />
       <Kpi label={`Good runs, ${days} days`} value={a.rate == null ? '—' : `${a.rate}%`} sub={`${a.good} of ${a.runs}`} tone={a.rate == null ? undefined : a.rate >= 95 ? 'ok' : a.rate >= 80 ? 'warn' : 'bad'} />
       <Kpi label="Furthest behind" value={worst == null ? '—' : worst < 48 ? `${Math.round(worst)}h` : `${Math.round(worst / 24)}d`} sub="since a project's newest good backup" tone={worst == null ? 'bad' : worst <= 26 ? 'ok' : worst <= 50 ? 'warn' : 'bad'} />
       <Kpi label="Stored" value={bytes(a.bytes)} sub={`${a.sets} sets · about $${monthlyCost(a.bytes).toFixed(2)}/month`} />

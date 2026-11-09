@@ -41,3 +41,17 @@ test('repos() merges what every token sees, once each, newest push first', async
   const r = await gh.repos();
   assert.deepEqual(r.map((x) => x.full_name), ['b/two', 'b/three', 'a/one']);
 });
+
+test('workflow state and pause/resume use the workflow endpoints', async () => {
+  const seen = [];
+  const fake = async (url, init) => {
+    seen.push(`${init.method} ${url.replace('https://api.github.com', '')}`);
+    if (url.endsWith('/backup.yml')) return { ok: true, status: 200, text: async () => JSON.stringify({ state: 'disabled_manually', updated_at: 'x' }) };
+    return { ok: true, status: 204, text: async () => '' };
+  };
+  const gh = github('t', fake);
+  assert.deepEqual(await gh.workflowState('o/r', 'backup.yml'), { state: 'disabled_manually', updatedAt: 'x' });
+  await gh.setWorkflow('o/r', 'backup.yml', false);
+  await gh.setWorkflow('o/r', 'backup.yml', true);
+  assert.deepEqual(seen.slice(1), ['PUT /repos/o/r/actions/workflows/backup.yml/disable', 'PUT /repos/o/r/actions/workflows/backup.yml/enable']);
+});

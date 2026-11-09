@@ -23,6 +23,7 @@ DRILL_PROJECT=demo-drill
 
 export function startFakes(port = 4999) {
   const calls = [];
+  const disabled = new Set(); // repo/workflow turned off (Pause)
   const emails = [];
   const files = {
     'dagangilat/foundation-next': { 'backup-kit/backup.env': ENV, 'firebase.json': '{"hosting":{"public":"dist","rewrites":[{"source":"/api/hello","function":"hello"}]},"functions":{"source":"functions"},"firestore":{}}', 'package.json': '{"scripts":{"build":"vite build"}}', '.firebaserc': '{"projects":{"prod":"demo-fn"}}', 'archive/evoting_flutter/pubspec.yaml': '', 'archive/evoting_flutter/ios/Runner.swift': '' },
@@ -55,6 +56,13 @@ export function startFakes(port = 4999) {
       return send(200, { workflow_runs: m[2] === 'backup.yml' ? [{ id: 777, status: 'completed', conclusion: 'success', event: 'schedule', run_started_at: '2026-10-24T02:00:05Z', html_url: 'https://github.com/x/runs/777', name: 'Backup', run_number: 3, triggering_actor: { login: 'dagangilat' } }] : [] });
     }
     if (p.match(/\/actions\/workflows\/[^/]+\/dispatches$/)) return send(204);
+    if ((m = p.match(/^\/repos\/([^/]+\/[^/]+)\/actions\/workflows\/([^/]+)\/(enable|disable)$/))) {
+      if (m[3] === 'disable') disabled.add(`${m[1]}/${m[2]}`); else disabled.delete(`${m[1]}/${m[2]}`);
+      return send(204);
+    }
+    if ((m = p.match(/^\/repos\/([^/]+\/[^/]+)\/actions\/workflows\/([^/]+)$/))) {
+      return send(200, { name: m[2], state: disabled.has(`${m[1]}/${m[2]}`) ? 'disabled_manually' : 'active', updated_at: '2026-10-24T10:00:00Z' });
+    }
     if (p.match(/\/actions\/secrets$/)) return send(200, { secrets: [{ name: 'FIREBASE_SERVICE_ACCOUNT_YCC' }] });
     if (p.match(/^\/repos\/micromedia-ai\/yourbackupagent\/tags$/)) return send(200, [{ name: 'v1' }, { name: 'v1.1' }]);
     if ((m = p.match(/^\/repos\/([^/]+\/[^/]+)$/))) return send(200, { default_branch: 'main', full_name: m[1] });

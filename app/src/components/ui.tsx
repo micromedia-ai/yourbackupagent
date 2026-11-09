@@ -5,7 +5,7 @@ export function Pill({ tone = 'info', children, title }: { tone?: 'ok' | 'warn' 
 }
 
 export const statusTone = (s: string) =>
-  s === 'succeeded' || s === 'ok' ? 'ok' : s === 'failed' || s === 'refused' || s === 'bad' ? 'bad' : s === 'incomplete' || s === 'warn' || s === 'unknown' ? 'warn' : 'info';
+  s === 'paused' ? 'muted' : s === 'succeeded' || s === 'ok' ? 'ok' : s === 'failed' || s === 'refused' || s === 'bad' ? 'bad' : s === 'incomplete' || s === 'warn' || s === 'unknown' ? 'warn' : 'info';
 
 export function Dialog({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
   useEffect(() => {

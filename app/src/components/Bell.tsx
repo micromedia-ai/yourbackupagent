@@ -31,7 +31,7 @@ export function Bell() {
   }, [open]);
 
   const alerts = (projects || []).filter((p) => p.health).flatMap((p) => [
-    ...(p.health.level !== 'ok' ? [{ p, level: p.health.level, text: p.health.text }] : []),
+    ...(p.health.level !== 'ok' && p.health.level !== 'paused' ? [{ p, level: p.health.level, text: p.health.text }] : []),
     ...(p.health.notes || []).map((text) => ({ p, level: 'warn' as const, text })),
   ]).map((a) => ({ ...a, key: `${a.p.projectId}|${a.text}` }));
   const shown = alerts.filter((a) => !hidden.includes(a.key));

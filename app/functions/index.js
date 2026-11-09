@@ -16,7 +16,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { github } from './lib/github.js';
 import { listSets, deleteSet, drillLabels, runJob, storeBytes, tokenInfo, ownsProject } from './lib/cloud.js';
 import { parseEnv, projectSettings, setEnvValue } from './lib/env.js';
-import { canDelete, health, prunePlan, RUN_ID } from './lib/sets.js';
+import { canDelete, health, pausedHealth, prunePlan, RUN_ID } from './lib/sets.js';
 import { lockBlocks, endsLock, LOCK_HOURS } from './lib/drilllock.js';
 import { firebaseProject, pickDeploySecret, kitFiles, setupCommands, TEMPLATE_PATHS, KIT_REPO } from './lib/protect.js';
 import { readSiteFacts, drillWorkflow, signIn } from './lib/drill.js';
@@ -138,9 +138,13 @@ async function refreshProject(gh, repo, s = null) {
   const store = await Promise.all([p.backupBucket, p.offsiteBucket].filter(Boolean).map((b) => storeBytes(b).catch((e) => { errors.push(`gs://${b}/files: ${e.message}`); return 0; })));
   const storeTotal = store.reduce((a, x) => a + x, 0);
   const totalBytes = sets.reduce((a, x) => a + x.bytes, 0) + storeTotal;
-  const h = inProject
+  // Pause turns the repo's Backup workflow off in GitHub; that is the one switch, read back here.
+  const wf = await gh.workflowState(p.repo, BACKUP_WORKFLOW).catch((e) => { errors.push(`backup workflow: ${e.message}`); return null; });
+  const paused = Boolean(wf && String(wf.state).startsWith('disabled'));
+  const h0 = inProject
     ? health(projectSetsOnly, { maxAgeHours: p.maxAgeHours, offsite: Boolean(p.offsiteBucket), maxSetBytes: (s.sizeWarnSetGB || 0) * 1e9, maxTotalBytes: (s.sizeWarnTotalGB || 0) * 1e9, totalBytes })
     : { level: 'bad', text: 'Cannot read the backup bucket' };
+  const h = paused ? pausedHealth(h0, wf.updatedAt) : h0;
   const { envText, ...rest } = p;
   // Without a rebuild-drill workflow, rebuild drills restore data only.
   const siteDrill = Boolean(await gh.fileText(p.repo, `.github/workflows/${p.drillWorkflow}`).catch(() => true));
@@ -149,7 +153,7 @@ async function refreshProject(gh, repo, s = null) {
   // A display name set in the app wins over PROJECT_LABEL (setLabel).
   const named = ((await db.doc('config/names').get()).data() || {})[p.projectId];
   batch.set(ref, {
-    ...rest, envText, health: h, errors, siteDrill, envLabel: rest.label, label: named || rest.label, labelInApp: Boolean(named),
+    ...rest, envText, health: h, paused, errors, siteDrill, envLabel: rest.label, label: named || rest.label, labelInApp: Boolean(named),
     parts: eff.parts, partsManual: eff.manual, detectedParts: detected ? detected.parts : null, partsWhy: detected ? detected.why : null,
     refreshedAt: FieldValue.serverTimestamp(),
     totals: { sets: sets.length, inProject: projectSetsOnly.length, inVault: (inVault || []).length, bytes: totalBytes, storeBytes: storeTotal },
@@ -405,6 +409,23 @@ async function runAction(by, data) {
         await logEnd(ref, 'failed', e.message);
         throw new HttpsError('internal', e.message);
       }
+    }
+    case 'pause':
+    case 'resume': {
+      const on = action === 'resume';
+      const ref = await logStart(by, on ? 'resume backups' : 'pause backups', { project: p.projectId });
+      const link = `https://github.com/${p.repo}/actions/workflows/${BACKUP_WORKFLOW}`;
+      try {
+        await gh.setWorkflow(p.repo, BACKUP_WORKFLOW, on);
+        await logEnd(ref, 'succeeded', on
+          ? 'Backup workflow turned on in GitHub: nightly backups and Sunday drills run again'
+          : 'Backup workflow turned off in GitHub: no nightly backups or Sunday drills until Resume; existing sets and vault copies stay', { link });
+      } catch (e) {
+        await logEnd(ref, 'failed', e.message);
+        throw new HttpsError('internal', e.message);
+      }
+      await refreshProject(gh, p.repo).catch(() => {});
+      return { ok: true, link, paused: !on };
     }
     case 'delete':
     case 'prune': {

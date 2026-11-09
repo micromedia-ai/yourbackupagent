@@ -86,3 +86,12 @@ test('drill lock: busy until the log line ends or the lock expires', async () =>
   assert.equal(endsLock(lock, 'L1', { action: 'rebuild drill', status: 'running' }), false);
   assert.equal(endsLock(lock, 'L2', { action: 'rebuild drill', status: 'failed' }), false);
 });
+
+test('a paused project is grey and keeps what it was', async () => {
+  const { pausedHealth } = await import('../lib/sets.js');
+  const h = pausedHealth({ level: 'bad', text: 'Newest good backup is 32h old', goodCount: 14 }, '2026-11-09T10:00:00Z');
+  assert.equal(h.level, 'paused');
+  assert.equal(h.text, 'Backups paused');
+  assert.equal(h.goodCount, 14);
+  assert.deepEqual(h.before, { level: 'bad', text: 'Newest good backup is 32h old' });
+});

@@ -27,6 +27,8 @@ export const TOOLS = [
   { name: 'get_log', description: 'The action log, newest first: every backup, drill, delete and setting change, with who did it and the result.', inputSchema: { type: 'object', properties: { project: { ...project, description: 'only this project (optional)' }, limit: { type: 'integer', description: '1-100, default 20' } } }, annotations: read },
   { name: 'refresh', description: 'Read every project again from GitHub and its buckets (what the app does each night), then return the overview.', inputSchema: { type: 'object', properties: {} } },
   { name: 'back_up_now', description: 'Start a backup of one project now, in its GitHub Backup workflow. It shows in the log when it finishes (a few minutes).', inputSchema: { type: 'object', properties: { project }, required: ['project'] } },
+  { name: 'pause_backups', description: 'Stop the nightly backups (and Sunday drills) of one project by turning its GitHub Backup workflow off. Existing sets and vault copies stay; the project shows as paused, without alerts. resume_backups turns it back on.', inputSchema: { type: 'object', properties: { project }, required: ['project'] } },
+  { name: 'resume_backups', description: 'Turn a paused project\'s GitHub Backup workflow back on, so nightly backups run again.', inputSchema: { type: 'object', properties: { project }, required: ['project'] } },
   { name: 'restore_drill', description: 'Prove the newest set restores: the project\'s Backup workflow restores it into a temporary database inside the project, compares counts, then deletes that database. Production data is not touched.', inputSchema: { type: 'object', properties: { project }, required: ['project'] } },
   { name: 'rebuild_drill', description: 'Rebuild one set into the shared drill project (data, files, users, and the site when the repo has a rebuild-drill workflow). One drill at a time. replace: take the drill project over from a drill of another project.', inputSchema: { type: 'object', properties: { project, run_id: runId, replace: { type: 'boolean' } }, required: ['project', 'run_id'] } },
   { name: 'wipe_drill_project', description: 'Empty the shared drill project after a drill.', inputSchema: { type: 'object', properties: { project: { ...project, description: 'the project whose drill it holds' }, confirm }, required: ['project'] }, annotations: { destructiveHint: true } },
@@ -88,6 +90,8 @@ export async function handleMcp(body, { ops, by, onToolCall } = {}) {
         refresh: async () => { await ops.refresh(); return ops.overview(); },
         back_up_now: () => ops.act(by, { action: 'backup', project: p }),
         restore_drill: () => ops.act(by, { action: 'drill-here', project: p }),
+        pause_backups: () => ops.act(by, { action: 'pause', project: p }),
+        resume_backups: () => ops.act(by, { action: 'resume', project: p }),
         rebuild_drill: () => ops.act(by, { action: 'rebuild', project: p, runIds: [String(a.run_id || '')], replace: a.replace === true }),
         wipe_drill_project: () => (a.confirm === true
           ? ops.act(by, { action: 'cleanup-drill', project: p })

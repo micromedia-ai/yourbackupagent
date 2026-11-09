@@ -8,12 +8,12 @@ export type SetSummary = {
   files?: number | null; users?: number | null; bytes: number; objects?: number; steps?: Record<string, string>; errors?: string[];
 };
 export type BackupSet = SetSummary & { inProject: boolean; inVault: boolean; project: SetSummary | null; vault: SetSummary | null };
-export type Health = { level: 'ok' | 'warn' | 'bad'; text: string; notes?: string[]; goodCount?: number; newestGood?: string; ageHours?: number };
+export type Health = { level: 'ok' | 'warn' | 'bad' | 'paused'; text: string; pausedSince?: string | null; notes?: string[]; goodCount?: number; newestGood?: string; ageHours?: number };
 export type Project = {
   projectId: string; label: string; repo: string; kitRef: string; backupBucket: string; keepDays: number; keepMinSets: number; storageMode?: 'full' | 'changed';
   maxAgeHours: number; offsiteBucket: string; offsiteKeepDays: number; vaultProject: string; drillProject: string; drillWorkflow: string; siteDrill?: boolean;
   envLabel?: string; labelInApp?: boolean; parts?: string[]; partsManual?: boolean; detectedParts?: string[] | null; partsWhy?: Record<string, string> | null; drillParts?: string; healthPath?: string;
-  health: Health; errors: string[]; refreshedAt?: any; totals?: { sets: number; inProject: number; inVault: number; bytes: number };
+  health: Health; paused?: boolean; errors: string[]; refreshedAt?: any; totals?: { sets: number; inProject: number; inVault: number; bytes: number };
   prunePreview?: { id: string; status: string; why: string }[];
 };
 export type LogLine = {
@@ -99,10 +99,11 @@ export function analytics(projects: Project[], sets: (BackupSet & { projectId: s
   const recent = sets.filter((s) => s.inProject && t(s.id) >= since);
   const good = recent.filter((s) => s.status === 'succeeded');
   const drills = log.filter((l) => /^(rebuild|restore) drill/.test(l.action) && ['succeeded', 'failed'].includes(l.status) && (l.at?.toDate?.()?.getTime?.() || 0) >= since);
-  const ages = projects.map((p) => (p.health?.newestGood ? (Date.now() - t(p.health.newestGood)) / 3600000 : null)).filter((a): a is number => a != null);
+  const ages = projects.filter((p) => p.health?.level !== 'paused').map((p) => (p.health?.newestGood ? (Date.now() - t(p.health.newestGood)) / 3600000 : null)).filter((a): a is number => a != null);
   return {
     projects: projects.length,
     healthy: projects.filter((p) => p.health?.level === 'ok').length,
+    paused: projects.filter((p) => p.health?.level === 'paused').length,
     runs: recent.length,
     good: good.length,
     rate: recent.length ? Math.round((100 * good.length) / recent.length) : null,

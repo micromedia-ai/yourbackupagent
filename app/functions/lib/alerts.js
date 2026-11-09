@@ -3,7 +3,8 @@
 // statuses and links, never backup data.
 import { runTime } from './sets.js';
 
-const LEVEL = { ok: 0, warn: 1, bad: 2 };
+// paused: backups turned off on purpose (Pause), never an alert or a recovery.
+const LEVEL = { ok: 0, paused: 0, warn: 1, bad: 2 };
 
 // Health changes since the last check: alert when a project gets worse (or is
 // new and not ok), "recovered" when it is back to ok. prev = { projectId: level }.
@@ -12,7 +13,7 @@ export function healthEvents(prev, projects) {
   for (const p of projects) {
     const level = (p.health && p.health.level) || 'bad';
     const was = prev[p.projectId];
-    if (was === level) continue;
+    if (was === level || level === 'paused' || was === 'paused') continue;
     if (LEVEL[level] > LEVEL[was ?? 'ok']) events.push({ kind: 'alert', project: p, level, was: was || null });
     else if (was && level === 'ok') events.push({ kind: 'recovered', project: p, level, was });
   }
@@ -41,8 +42,8 @@ export function bytes(n) {
   while (v >= 1000 && i < u.length - 1) { v /= 1000; i += 1; }
   return `${v >= 100 || i === 0 ? Math.round(v) : v.toFixed(1)} ${u[i]}`;
 }
-const tone = { ok: ['#1f7a3f', '#e3f3e8'], warn: ['#9a5b00', '#fbefd9'], bad: ['#b3261e', '#fbe4e2'] };
-const pill = (level, text) => `<span style="display:inline-block;padding:2px 8px;border-radius:99px;font:600 12px monospace;color:${tone[level][0]};background:${tone[level][1]}">${esc(text)}</span>`;
+const tone = { ok: ['#1f7a3f', '#e3f3e8'], warn: ['#9a5b00', '#fbefd9'], bad: ['#b3261e', '#fbe4e2'], paused: ['#5b6964', '#eceeed'] };
+const pill = (level, text) => { const [fg, bg] = tone[level] || tone.bad; return `<span style="display:inline-block;padding:2px 8px;border-radius:99px;font:600 12px monospace;color:${fg};background:${bg}">${esc(text)}</span>`; };
 
 // One email layout for everything the app sends.
 export function layout({ title, intro, rows = [], button, footer }) {

@@ -46,3 +46,11 @@ test('setup is one command per repository', () => {
   assert.equal(c.length, 2);
   assert.match(c[1].cmd, /\.\/onboard\.sh dagangilat\/x$/);
 });
+
+test('pausing or resuming a project sends no alert or recovery', () => {
+  const p = (level) => [{ projectId: 'demo-fn', health: { level, text: level } }];
+  assert.equal(healthEvents({ 'demo-fn': 'bad' }, p('paused')).length, 0);
+  assert.equal(healthEvents({ 'demo-fn': 'paused' }, p('ok')).length, 0);
+  assert.equal(healthEvents({ 'demo-fn': 'paused' }, p('bad')).length, 0);
+  assert.equal(healthEvents({}, p('paused')).length, 0);
+});

@@ -212,6 +212,16 @@ async function main() {
     const disp = fakes.calls.find((c) => c.path.endsWith('/backup.yml/dispatches'));
     check('back up now starts the project\'s Backup workflow', disp && disp.body.inputs.action === 'run' && disp.body.ref === 'main');
 
+    page.once('dialog', (d) => d.accept());
+    await page.getByRole('button', { name: 'Pause backups' }).click();
+    await page.getByRole('button', { name: 'Resume backups' }).waitFor({ timeout: 30000 });
+    check('pause turns the Backup workflow off in GitHub', fakes.calls.some((c) => c.method === 'PUT' && c.path.endsWith('/backup.yml/disable')));
+    check('a paused project says so, without Back up now', await page.getByText('Backups paused', { exact: true }).count() > 0 && await page.getByRole('button', { name: 'Back up now' }).isDisabled());
+    await page.screenshot({ path: `${SHOTS}/4b-paused.png` });
+    await page.getByRole('button', { name: 'Resume backups' }).click();
+    await page.getByRole('button', { name: 'Pause backups' }).waitFor({ timeout: 30000 });
+    check('resume turns the Backup workflow back on', fakes.calls.some((c) => c.method === 'PUT' && c.path.endsWith('/backup.yml/enable')));
+
     await page.goto('http://127.0.0.1:5055/log');
     await page.locator('.log li').first().waitFor();
     const logText = await page.locator('.log').textContent();

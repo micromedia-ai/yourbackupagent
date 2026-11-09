@@ -752,7 +752,7 @@ function protectBody(repo, projectId, kitRef, secret, existing, drill) {
     `- \`.github/workflows/backup.yml\`: back up at 02:00 UTC every day, restore drill on Sundays (signs in to Google ${secret ? `with the secret \`${secret}\`` : 'with the set-up below'})`,
     drill ? `- \`.github/workflows/${DRILL_FILE}\`: the site part of rebuild drills, made from this repo's \`firebase.json\`: builds the site from main and deploys it into the drill project (keys empty, scheduled jobs paused), then checks it answers. Never touches \`${projectId}\`.` : `- \`.github/workflows/${DRILL_FILE}\` already exists and is left as it is`,
     '',
-    'Before merging: press **Set it up here** on the Protect page of the YourBackupAgent Manager (or run `./onboard.sh ' + repo + '` from a checkout of dagangilat/yourbackupagent). It sets up the buckets, protection and keyless GitHub sign-in, and takes the first backup. Otherwise the first nightly backup fails.',
+    'Before merging: press **Set it up here** on the Protect page of the YourBackupAgent Manager (or run `./onboard.sh ' + repo + '` from a checkout of micromedia-ai/yourbackupagent). It sets up the buckets, protection and keyless GitHub sign-in, and takes the first backup. Otherwise the first nightly backup fails.',
     '',
     'Opened from the YourBackupAgent Manager.',
   ].join('\n');

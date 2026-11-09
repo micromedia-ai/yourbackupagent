@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Backup kit: back up, restore, drill and archive a Firebase project.
 #
-# One script for every project (github.com/dagangilat/yourbackupagent); the
+# One script for every project (github.com/micromedia-ai/yourbackupagent); the
 # project's own settings are in its backup-kit/backup.env. Runs on a Mac or Linux terminal with the
 # Google Cloud CLI, jq and curl (Cloud Shell has all three), and in GitHub
 # Actions. bash 3.2 compatible. See backup-kit/README.md.
@@ -17,7 +17,7 @@ KIT_VERSION=1.1
 # The project's settings: BACKUP_ENV, else backup-kit/backup.env under the
 # current directory (run from the project's repository).
 ENV_FILE="${BACKUP_ENV:-$PWD/backup-kit/backup.env}"
-[ -f "$ENV_FILE" ] || die "no settings file $ENV_FILE (run from the project's repository, or set BACKUP_ENV; template: templates/backup.env.example in dagangilat/yourbackupagent)"
+[ -f "$ENV_FILE" ] || die "no settings file $ENV_FILE (run from the project's repository, or set BACKUP_ENV; template: templates/backup.env.example in micromedia-ai/yourbackupagent)"
 ENV_FILE="$(cd "$(dirname "$ENV_FILE")" && pwd)/$(basename "$ENV_FILE")"
 # The project's git repository (commit in the manifest, code bundle in archives).
 REPO_DIR="$(git -C "$(dirname "$ENV_FILE")" rev-parse --show-toplevel 2>/dev/null || dirname "$ENV_FILE")"

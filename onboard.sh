@@ -4,7 +4,7 @@
 #
 #   ./onboard.sh OWNER/REPO [--drill | --no-drill]
 #
-# Run it on your computer (macOS or Linux) from this checkout of dagangilat/yourbackupagent. It:
+# Run it on your computer (macOS or Linux) from this checkout of micromedia-ai/yourbackupagent. It:
 #   1. checks out the repository's yourbackupagent/protect branch (or its
 #      default branch once that is merged) under ~/.cache/yourbackupagent/repos
 #   2. makes sure gcloud is logged in as the vault owner and as an owner of

@@ -1,4 +1,4 @@
-# Kit runner: runs dagangilat/yourbackupagent's kit/backup.sh (the version a
+# Kit runner: runs micromedia-ai/yourbackupagent's kit/backup.sh (the version a
 # project pins with KIT_REF) as a Cloud Run job, for the manager app's
 # rebuild drills and drill-project wipes. Started only by the app's API.
 FROM gcr.io/google.com/cloudsdktool/google-cloud-cli:slim

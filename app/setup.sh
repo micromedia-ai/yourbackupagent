@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # One-time setup and deploys of the YourBackupAgent Manager app
 # (Firebase project yourbackupagent-app). Run from a checkout of
-# dagangilat/yourbackupagent on a Mac, logged in to gcloud and firebase as
+# micromedia-ai/yourbackupagent on a Mac, logged in to gcloud and firebase as
 # the app owner (dagan.gilat@gmail.com). Every step can be run again.
 #
 #   app/setup.sh create            project, Firebase, Firestore, the runner account
@@ -99,8 +99,11 @@ cmd_create() {
 cmd_token() {
   info "GitHub token for the app (secret GITHUB_TOKEN in $APP_PROJECT)"
   say "  Create a fine-grained token at https://github.com/settings/personal-access-tokens/new"
-  say "  Owner dagangilat, All repositories (or the ones to protect + yourbackupagent), permissions:"
+  say "  One token per owner (your account, and each organization that holds a repo to protect),"
+  say "  All repositories (or the ones to protect + yourbackupagent), permissions:"
   say "  Contents, Pull requests, Actions, Workflows: Read and write; Secrets, Metadata: Read-only."
+  say "  One owner: paste the token. Several: paste owner=token pairs joined by ';',"
+  say "  e.g. dagangilat=github_pat_...;micromedia-ai=github_pat_..."
   local t
   printf '  Paste it (not shown): '
   read -rs t; printf '\n'

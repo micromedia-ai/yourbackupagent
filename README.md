@@ -17,7 +17,7 @@ is only proven by restoring it somewhere else.
 | Path | What |
 |---|---|
 | `kit/backup.sh`, `kit/lib.sh` | The kit (bash 3.2, gcloud, jq, curl) |
-| `action.yml` | GitHub Action: `uses: dagangilat/yourbackupagent@v1` with `command: run`, `check` or `drill` |
+| `action.yml` | GitHub Action: `uses: micromedia-ai/yourbackupagent@v1` with `command: run`, `check` or `drill` |
 | `templates/backup.env.example` | A project's settings |
 | `templates/backup-kit-wrapper.sh` | Goes to a project's `backup-kit/backup.sh`: runs the kit version pinned by `KIT_REF` |
 | `templates/backup.yml` | A project's daily workflow (backup + check, Sunday restore drill) |

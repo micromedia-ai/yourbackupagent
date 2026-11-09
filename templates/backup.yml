@@ -1,7 +1,7 @@
 name: Backup
 
 # Daily backup of this project with YourBackupAgent
-# (github.com/dagangilat/yourbackupagent), settings in backup-kit/backup.env:
+# (github.com/micromedia-ai/yourbackupagent), settings in backup-kit/backup.env:
 #   02:00 UTC every day   run: Firestore (one consistent moment), Storage,
 #                         Auth users with password hashes, Realtime Database,
 #                         project config -> the project's backup bucket, then
@@ -53,18 +53,18 @@ jobs:
 
       - name: Back up
         if: env.ACTION == 'run'
-        uses: dagangilat/yourbackupagent@v1
+        uses: micromedia-ai/yourbackupagent@v1
         with:
           command: run
 
       - name: Restore drill
         if: env.ACTION == 'drill'
-        uses: dagangilat/yourbackupagent@v1
+        uses: micromedia-ai/yourbackupagent@v1
         with:
           command: drill
 
       - name: Check
         if: always() && env.ACTION != 'drill'
-        uses: dagangilat/yourbackupagent@v1
+        uses: micromedia-ai/yourbackupagent@v1
         with:
           command: check

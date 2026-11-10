@@ -188,3 +188,4 @@ label.check { flex-direction: row; align-items: center; gap: 8px; }
 @media (max-width: 720px) {
   .bell-panel { position: fixed; left: 16px; right: 16px; top: 56px; width: auto; }
 }
+pre.note { white-space: pre-wrap; font: .8rem/1.45 var(--mono); color: var(--ink); max-height: 70vh; overflow: auto; margin: 0; }

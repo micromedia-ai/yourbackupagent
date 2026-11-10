@@ -14,6 +14,7 @@ export const INSTRUCTIONS = [
   'Changes are logged with who asked. delete_sets, prune_sets and wipe_drill_project only show what they would do unless confirm is true: show that to the person and ask before confirming.',
   'A project always keeps at least its minimum of good sets; vault copies cannot be deleted here; production is never restored from here (production_restore_command gives the command for a person to run).',
   'One drill at a time runs in the shared drill project: if a tool says it is busy, wait for that drill to finish (get_log shows it).',
+  'Retired projects are kept as archives in the vault: list_archives, and get_restore_note for how to bring one back.',
 ].join(' ');
 
 const project = { type: 'string', description: 'Firebase project id, e.g. foundation-next-app (see get_overview)' };
@@ -34,6 +35,8 @@ export const TOOLS = [
   { name: 'wipe_drill_project', description: 'Empty the shared drill project after a drill.', inputSchema: { type: 'object', properties: { project: { ...project, description: 'the project whose drill it holds' }, confirm }, required: ['project'] }, annotations: { destructiveHint: true } },
   { name: 'prune_sets', description: 'Delete the sets older than the project keeps, from the project bucket, never below its minimum of good sets. Without confirm: the list it would delete.', inputSchema: { type: 'object', properties: { project, confirm }, required: ['project'] }, annotations: { destructiveHint: true } },
   { name: 'delete_sets', description: 'Delete chosen sets from the project bucket (recoverable for 30 days by soft delete). Refused if fewer than the project\'s minimum of good sets would be left. Vault copies stay. Without confirm: whether it is allowed.', inputSchema: { type: 'object', properties: { project, run_ids: { type: 'array', items: { type: 'string' }, description: 'set ids' }, confirm }, required: ['project', 'run_ids'] }, annotations: { destructiveHint: true } },
+  { name: 'list_archives', description: 'Retired projects kept as archives in the vault (one full backup for good, plus code bundle and RESTORE.md): newest archive of each, its date, counts, size, where the copies are, and its rebuild-drill result.', inputSchema: { type: 'object', properties: {} }, annotations: read },
+  { name: 'get_restore_note', description: 'The RESTORE.md of a project\'s newest archive: what the project was, what the archive holds, and the steps to bring it back.', inputSchema: { type: 'object', properties: { project: { ...project, description: 'archived project id (see list_archives)' } }, required: ['project'] }, annotations: read },
   { name: 'production_restore_command', description: 'The command a person runs on their computer to restore a set into production. Nothing is restored from here.', inputSchema: { type: 'object', properties: { project, run_id: runId }, required: ['project', 'run_id'] }, annotations: read },
 ];
 
@@ -53,7 +56,7 @@ const rpcError = (id, code, message) => ({ jsonrpc: '2.0', id: id ?? null, error
 const userFacing = (e) => e && typeof e.code === 'string' && e.code !== 'internal';
 
 /**
- * One MCP JSON-RPC message (or batch). ops: { overview(), sets(project, n),
+ * One MCP JSON-RPC message (or batch). ops: { overview(), sets(project, n), archives(), restoreNote(project),
  * log(project, n), refresh(), act(by, data), preview(data),
  * restoreCommand(project, runId) }; `by` names the person and assistant.
  * Returns the reply body, or null for notifications only.
@@ -100,6 +103,8 @@ export async function handleMcp(body, { ops, by, onToolCall } = {}) {
         delete_sets: () => (a.confirm === true
           ? ops.act(by, { action: 'delete', project: p, runIds: ids })
           : ops.preview({ action: 'delete', project: p, runIds: ids })),
+        list_archives: async () => ({ archives: await ops.archives() }),
+        get_restore_note: async () => ({ project: p, restoreNote: await ops.restoreNote(p) }),
         production_restore_command: () => ops.restoreCommand(p, String(a.run_id || '')),
       };
       const run = handlers[params.name];

@@ -1671,6 +1671,15 @@ drill_guard() {
   die "$DRILL_PROJECT is in use by a drill of $of. If its \"Rebuild drill\" workflow is done, wipe it from that project (backup.sh cleanup --drill), or run this again with --replace."
 }
 
+# archive_drill_record <gs://archive/run> passed|failed [detail]: drill.json next
+# to an archive, so the manager app (Archived projects) shows the result.
+archive_drill_record() {
+  [ "${FROM:-}" = "archive" ] || return 0
+  jq -nc --arg s "$2" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg d "${3:-}" --arg dp "$DRILL_PROJECT" --arg site "$([ "$DATA_ONLY" = "1" ] && echo 'not run' || echo 'see the Rebuild drill workflow')" \
+    '{status: $s, at: $at, site: $site, detail: $d, drillProject: $dp}' >"$WORKDIR/drill.json"
+  "${GV[@]}" storage cp "$WORKDIR/drill.json" "$1/drill.json" --quiet >/dev/null 2>&1 || warn "could not write $1/drill.json"
+}
+
 cmd_rebuild() {
   local root id src
   [ -n "$DRILL_PROJECT" ] || die "DRILL_PROJECT is empty in $ENV_FILE"
@@ -1693,8 +1702,10 @@ cmd_rebuild() {
     drill_labels "$(jq -nc --arg of "$PROJECT_ID" --arg run "$(tr 'A-Z' 'a-z' <<<"$id")" '{"drill-of": $of, "drill-run": $run, "drill-data": "passed"}')" \
       || die "the data restore passed, but the drill-data=passed label on $DRILL_PROJECT could not be set (the site workflow checks it)"
     say "  DATA RESTORE PASSED"
+    archive_drill_record "$src" passed "data restored and every count matched"
   else
     drill_labels "$(jq -nc --arg of "$PROJECT_ID" '{"drill-of": $of, "drill-data": "failed"}')" || true
+    archive_drill_record "$src" failed "counts differ"
     die "DATA RESTORE FAILED: counts differ (above). $DRILL_PROJECT is kept for a look."
   fi
   copy_drill_secrets "$src"

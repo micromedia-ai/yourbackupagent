@@ -14,7 +14,8 @@ import { onDocumentWritten } from 'firebase-functions/v2/firestore';
 import { defineSecret, defineString } from 'firebase-functions/params';
 import { createHash, randomBytes } from 'node:crypto';
 import { github } from './lib/github.js';
-import { listSets, deleteSet, drillLabels, runJob, storeBytes, tokenInfo, ownsProject } from './lib/cloud.js';
+import { listSets, listArchives, restoreNote, deleteSet, drillLabels, runJob, storeBytes, tokenInfo, ownsProject } from './lib/cloud.js';
+import { newestPerProject } from './lib/archives.js';
 import { parseEnv, projectSettings, setEnvValue } from './lib/env.js';
 import { canDelete, health, pausedHealth, prunePlan, RUN_ID } from './lib/sets.js';
 import { lockBlocks, endsLock, LOCK_HOURS } from './lib/drilllock.js';
@@ -39,6 +40,8 @@ const REGION = 'us-central1';
 const JOB = 'kit-runner';
 const BACKUP_WORKFLOW = 'backup.yml';
 const DEFAULT_REPOS = ['dagangilat/foundation-next'];
+// Vault buckets holding archives of retired projects (backup.sh archive); -eu for EU data.
+const DEFAULT_ARCHIVE_BUCKETS = ['yourbackupagent-archive', 'yourbackupagent-archive-eu'];
 
 const opts = { region: REGION, secrets: [GITHUB_TOKEN, RESEND_API_KEY], serviceAccount: RUNNER_SA, timeoutSeconds: 540, memory: '512MiB' };
 
@@ -75,7 +78,7 @@ async function logEnd(ref, status, detail, extra = {}) {
 async function settings() {
   const doc = await db.doc('config/settings').get();
   const s = doc.exists ? doc.data() : {};
-  return { repos: s.repos || DEFAULT_REPOS, defaultMinSets: s.defaultMinSets || 7, ...s, sizeWarnSetGB: s.sizeWarnSetGB ?? 2, sizeWarnTotalGB: s.sizeWarnTotalGB ?? 20 };
+  return { repos: s.repos || DEFAULT_REPOS, archiveBuckets: s.archiveBuckets || DEFAULT_ARCHIVE_BUCKETS, defaultMinSets: s.defaultMinSets || 7, ...s, sizeWarnSetGB: s.sizeWarnSetGB ?? 2, sizeWarnTotalGB: s.sizeWarnTotalGB ?? 20 };
 }
 
 async function loadProject(gh, repo) {
@@ -196,11 +199,28 @@ async function refreshDrillSlot(drillProject) {
   await db.doc('drill/slot').set({ project: drillProject, labels, refreshedAt: FieldValue.serverTimestamp() });
 }
 
+// Archives of retired projects: one doc per project (archives/<project>),
+// its newest archive. A project whose archive is gone is removed.
+async function refreshArchives(s) {
+  const errors = [];
+  const rows = (await Promise.all(s.archiveBuckets.map((b) => listArchives(b).catch((e) => { errors.push(`gs://${b}: ${e.message}`); return []; })))).flat();
+  const newest = newestPerProject(rows);
+  const batch = db.batch();
+  const keep = new Set(newest.map((a) => a.projectId));
+  for (const a of newest) batch.set(db.collection('archives').doc(a.projectId), { ...a, refreshedAt: FieldValue.serverTimestamp() });
+  if (!errors.length) for (const d of (await db.collection('archives').get()).docs) if (!keep.has(d.id)) batch.delete(d.ref);
+  await batch.commit();
+  return { archives: newest.length, errors };
+}
+
 async function refreshAll(token) {
   const gh = github(token);
   const s = await settings();
-  const out = [];
-  for (const repo of s.repos) out.push(await refreshProject(gh, repo, s).catch((e) => ({ repo, error: e.message })));
+  const [out, archives] = await Promise.all([
+    Promise.all(s.repos.map((repo) => refreshProject(gh, repo, s).catch((e) => ({ repo, error: e.message })))),
+    refreshArchives(s).catch((e) => ({ error: e.message })),
+  ]);
+  if (archives.error || (archives.errors && archives.errors.length)) out.push({ repo: 'archives', error: archives.error, errors: archives.errors || [] });
   const drill = out.find((o) => o.protected);
   if (drill) {
     const p = (await projectRef(drill.projectId).get()).data();
@@ -387,6 +407,24 @@ function checkIds(ids) {
   if (!Array.isArray(ids) || ids.length === 0 || ids.length > 100 || !ids.every((i) => RUN_ID.test(i))) {
     throw new HttpsError('invalid-argument', 'runIds must be 1-100 backup ids like 20261024T020000Z');
   }
+}
+
+// The RESTORE.md of a project's newest archive (how to bring it back).
+export const archiveNote = onCall(opts, async (req) => {
+  await requireUser(req);
+  return { text: await archiveNoteText(String((req.data || {}).project || '')) };
+});
+
+async function archiveNoteText(project) {
+  const doc = await db.collection('archives').doc(project).get();
+  if (!project || !doc.exists) throw new HttpsError('not-found', `No archive of ${project || '(none)'}. See list_archives.`);
+  const a = doc.data();
+  if (!a.hasRestoreNote) throw new HttpsError('not-found', `The archive of ${project} has no RESTORE.md.`);
+  for (const b of a.copies || [a.bucket]) {
+    const text = await restoreNote(b, project, a.id);
+    if (text) return text;
+  }
+  throw new HttpsError('unavailable', `Could not read RESTORE.md of ${project}.`);
 }
 
 export const act = onCall(opts, async (req) => runAction(await requireUser(req), req.data || {}));
@@ -941,6 +979,13 @@ const mcpOps = {
       return { id: d.id, at: l.at, by: l.by, action: l.action, status: l.status, project: l.project || null, runIds: l.runIds || null, detail: l.detail || null, link: l.link || null };
     });
   },
+  async archives() {
+    return (await db.collection('archives').get()).docs.map((d) => {
+      const a = d.data();
+      return { projectId: a.projectId, archiveId: a.id, archivedAt: a.startedAt || null, status: a.status, docs: a.docs, files: a.files, users: a.users, bytes: a.bytes, commit: a.commit, copies: (a.copies || [a.bucket]).map((b) => `gs://${b}/archive/${a.projectId}/${a.id}/`), olderArchives: a.older || 0, hasCode: a.hasCode, hasRestoreNote: a.hasRestoreNote, drill: a.drill || null };
+    });
+  },
+  restoreNote: (project) => archiveNoteText(project),
   refresh: () => refreshAll(GITHUB_TOKEN.value()),
   act: runAction,
   async preview({ action, project, runIds = [] }) {

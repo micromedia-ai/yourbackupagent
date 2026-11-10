@@ -1,9 +1,10 @@
 import { call } from '../lib/firebase';
-import { analytics, daily, dayKeys, statusCells, useAllSets, useDoc, useLog, useProjects, type Project } from '../lib/data';
-import { ago, bytes, monthlyCost, runDate, tsDate, when } from '../lib/format';
+import { useState } from 'react';
+import { analytics, daily, dayKeys, statusCells, useAllSets, useArchives, useDoc, useLog, useProjects, type Archive, type Project } from '../lib/data';
+import { ago, bytes, monthlyCost, num, runDate, tsDate, when } from '../lib/format';
 import { link } from '../lib/route';
 import { Bars, Kpi, StatusGrid } from '../components/charts';
-import { Pill, statusTone, useBusy } from '../components/ui';
+import { Dialog, Pill, statusTone, useBusy } from '../components/ui';
 import { LogList } from './Log';
 
 export const PROJECT_COLORS = ['var(--c1)', 'var(--c2)', 'var(--c3)', 'var(--c4)'];
@@ -58,6 +59,44 @@ function Card({ p }: { p: Project }) {
   );
 }
 
+// Retired projects kept as one full backup in the vault (backup.sh archive).
+export function Archives() {
+  const { rows } = useArchives();
+  const [note, setNote] = useState<{ project: string; text: string } | null>(null);
+  const { busy, run, banner } = useBusy();
+  if (!rows || rows.length === 0) return null;
+  const drillPill = (a: Archive) => !a.drill ? <Pill tone="muted">no drill</Pill>
+    : <Pill tone={a.drill.status === 'passed' ? 'ok' : a.drill.status === 'failed' ? 'bad' : 'warn'} title={a.drill.detail || undefined}>
+        drill {a.drill.status}{a.drill.site === 'passed' ? ' + site' : a.drill.status === 'passed' ? ' (data)' : ''}
+      </Pill>;
+  return (
+    <section className="panel" id="archives">
+      <h4>Archived projects ({rows.length})</h4>
+      <p className="small muted">Kept for good in the vault: one full backup, the code (git bundle) and a note on how to bring the project back. No nightly backups.</p>
+      <div className="tscroll"><table>
+        <thead><tr><th>Project</th><th>Archived</th><th>Holds</th><th>Size</th><th>Drill</th><th /></tr></thead>
+        <tbody>
+          {[...rows].sort((a, b) => a.projectId.localeCompare(b.projectId)).map((a) => (
+            <tr key={a.projectId}>
+              <td><code>{a.projectId}</code>{(a.copies || []).length > 1 && <span className="small muted"> · {a.copies!.length} copies</span>}</td>
+              <td title={a.id}>{when(runDate(a.id))}</td>
+              <td className="small">{num(a.docs)} docs · {num(a.files)} files · {num(a.users)} users{a.hasCode ? ' · code' : ''}</td>
+              <td>{bytes(a.bytes)}</td>
+              <td>{drillPill(a)}</td>
+              <td>{a.hasRestoreNote && <button className="btn small" disabled={!!busy} onClick={() => run(a.projectId, async () => {
+                const r = await call<{ text: string }>('archiveNote', { project: a.projectId });
+                setNote({ project: a.projectId, text: r.text });
+              })}>{busy === a.projectId ? 'Opening…' : 'How to restore'}</button>}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table></div>
+      {banner}
+      {note && <Dialog title={`Bring back ${note.project}`} onClose={() => setNote(null)}><pre className="detail note">{note.text}</pre></Dialog>}
+    </section>
+  );
+}
+
 export function Kpis({ days = 30 }: { days?: number }) {
   const { rows: projects } = useProjects();
   const sets = useAllSets();
@@ -96,6 +135,7 @@ export function Overview() {
         {(projects || []).map((p) => <Card key={p.projectId} p={p} />)}
         <a className="pcard add" {...link('/protect')}>+ Protect a repository</a>
       </div>
+      <Archives />
       {projects && projects.length === 0 && <p className="muted">No projects read yet. Press Refresh now (it reads every repository listed in Settings).</p>}
       {sets && projects && projects.length > 0 && (
         <section className="panel">

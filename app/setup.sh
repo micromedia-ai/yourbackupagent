@@ -12,6 +12,8 @@
 #   app/setup.sh runner            build and deploy the kit runner job
 #   app/setup.sh grant PROJECT_ID  let the app read and prune PROJECT_ID's backups,
 #                                  read its vault copies and use the drill project
+#   app/setup.sh archives          let the app read the vault's archive buckets (the
+#                                  Archived projects list and restore notes)
 #   app/setup.sh email             turn on email alerts: the Resend API key (asks for it,
 #                                  or --from PROJECT copies RESEND_API_KEY from there)
 #   app/setup.sh deploy            build and deploy the web app, API and rules
@@ -198,6 +200,20 @@ cmd_grant() {
 }
 
 # A GitHub token is stored as "owner=token;owner=token" (app/functions/lib/github.js parseTokens).
+cmd_archives() {
+  local b
+  info "Let the app's runner ($RUNNER_SA) read the archive buckets (as $OWNER)"
+  for b in yourbackupagent-archive yourbackupagent-archive-eu; do
+    if ! "${G[@]}" storage buckets describe "gs://$b" --format='value(name)' >/dev/null 2>&1; then
+      say "  gs://$b does not exist yet; skipped (run this again after its first archive)"
+      continue
+    fi
+    run "${G[@]}" storage buckets add-iam-policy-binding "gs://$b" --member="serviceAccount:$RUNNER_SA" --role=roles/storage.objectViewer --quiet --format=none
+    run "${G[@]}" storage buckets add-iam-policy-binding "gs://$b" --member="serviceAccount:$RUNNER_SA" --role=roles/storage.legacyBucketReader --quiet --format=none
+  done
+  say "  Read only: deleting an archive stays with you."
+}
+
 gh_login() { # gh_login TOKEN -> the token's account login, or nothing
   curl -fsS -H "Authorization: Bearer $1" https://api.github.com/user 2>/dev/null | jq -r '.login // empty' || true
 }
@@ -305,8 +321,9 @@ case "${1:-}" in
   org) shift; cmd_org "${1:-}" ;;
   runner) cmd_runner ;;
   grant) shift; cmd_grant "${1:-}" ;;
+  archives) cmd_archives ;;
   email) shift; cmd_email "$@" ;;
   deploy) cmd_deploy ;;
   status) cmd_status ;;
-  *) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+  *) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac

@@ -16,6 +16,11 @@ export type Project = {
   health: Health; paused?: boolean; errors: string[]; refreshedAt?: any; totals?: { sets: number; inProject: number; inVault: number; bytes: number };
   prunePreview?: { id: string; status: string; why: string }[];
 };
+export type Archive = {
+  projectId: string; id: string; bucket: string; copies?: string[]; path: string; status: string; startedAt?: string | null;
+  docs?: number | null; files?: number | null; users?: number | null; bytes: number; commit?: string | null; older?: number;
+  hasRestoreNote: boolean; hasCode: boolean; drill: { status: 'passed' | 'failed' | 'unknown'; at: string | null; site: string; detail: string | null } | null;
+};
 export type LogLine = {
   id: string; at: any; by: string; action: string; status: string; project?: string; repo?: string; runIds?: string[];
   where?: string; detail?: string; link?: string; source?: string; endedAt?: any;
@@ -33,6 +38,7 @@ function useQuery<T>(make: () => Query | null, deps: unknown[]) {
   return { rows, error };
 }
 
+export const useArchives = () => useQuery<Archive>(() => collection(db(), 'archives'), []);
 export const useProjects = () => useQuery<Project>(() => collection(db(), 'projects'), []);
 export const useSets = (projectId: string) =>
   useQuery<BackupSet>(() => (projectId ? query(collection(db(), 'projects', projectId, 'sets'), orderBy('id', 'desc')) : null), [projectId]);

@@ -92,6 +92,13 @@ async function main() {
       }
     }
     await put('demo-fn-backups', `runs/${failed}/manifest.json`, JSON.stringify(manifest(failed, 'failed', 0)));
+    // An archived (retired) project in the vault's archive bucket, with its drill result and restore note.
+    const arch = runId(30);
+    const ab = `archive/old-app/${arch}`;
+    await put('yourbackupagent-archive', `${ab}/manifest.json`, JSON.stringify(manifest(arch, 'succeeded', 9)));
+    await put('yourbackupagent-archive', `${ab}/code/repo.bundle`, 'bundle');
+    await put('yourbackupagent-archive', `${ab}/drill.json`, JSON.stringify({ status: 'passed', at: new Date().toISOString(), site: 'not run' }));
+    await put('yourbackupagent-archive', `${ab}/RESTORE.md`, '# Bring back old-app\n1. Create a project');
 
     const browser = await chromium.launch();
     const ctx = await browser.newContext({ viewport: { width: 1280, height: 860 } });
@@ -117,6 +124,11 @@ async function main() {
     check('health is shown (newest run failed -> warning)', (await card.textContent()).includes('The newest run failed'), await card.textContent());
     check('drill slot shows who holds the drill project', await page.getByText('holds a drill of other-app').count() > 0);
     check('drill slot links the rebuilt site when its site part passed', (await page.locator('#drill-site-link').first().getAttribute('href'))?.match(/^https:\/\/[a-z0-9-]*drill[a-z0-9-]*\.web\.app$/) != null);
+    const arow = page.locator('#archives tr', { hasText: 'old-app' });
+    check('archived projects are listed with counts and their drill result', await arow.count() === 1 && /43 docs/.test(await arow.textContent()) && /drill passed \(data\)/.test(await arow.textContent()), await page.locator('#archives').textContent().catch(() => 'no archives section'));
+    await arow.getByRole('button', { name: 'How to restore' }).click();
+    check('an archive opens its restore note', await page.getByText('1. Create a project').waitFor({ timeout: 15000 }).then(() => true, () => false), await page.locator('[role=dialog]').textContent().catch(() => 'no dialog'));
+    await page.getByRole('button', { name: 'Close' }).click();
     check('overview: 5 headline numbers and the nightly grid', await page.locator('.kpi').count() === 5 && await page.locator('.sgrid .cell.failed').count() >= 1);
     // Alerts live behind the bell; a hidden one stays hidden until its text changes.
     const badge = async () => (await page.locator('.bell-n').count()) ? Number(await page.locator('.bell-n').textContent()) : 0;

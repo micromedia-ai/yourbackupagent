@@ -4,6 +4,7 @@
 import { Storage } from '@google-cloud/storage';
 import { GoogleAuth } from 'google-auth-library';
 import { summarize, RUN_ID } from './sets.js';
+import { groupArchives, archiveRow } from './archives.js';
 
 const storage = new Storage();
 const auth = new GoogleAuth({ scopes: ['https://www.googleapis.com/auth/cloud-platform'] });
@@ -62,6 +63,39 @@ export async function listSets(bucket, known = new Map()) {
     out.push(summarize(id, manifest, listing));
   }
   return out.sort((a, b) => (a.id < b.id ? 1 : -1));
+}
+
+// listArchives(bucket) -> one row per archive/<project>/<id>/ in that bucket,
+// with its manifest counts and drill result (archives.js). A missing bucket
+// (e.g. no EU archives yet) is an empty list.
+export async function listArchives(bucket) {
+  let files;
+  try {
+    [files] = await storage.bucket(bucket).getFiles({ prefix: 'archive/', autoPaginate: true });
+  } catch (e) {
+    if (e && e.code === 404) return [];
+    throw e;
+  }
+  const groups = groupArchives(files.map((f) => ({ name: f.name, size: f.metadata.size })));
+  const json = async (name) => {
+    try { const [buf] = await storage.bucket(bucket).file(name).download(); return JSON.parse(buf.toString('utf8')); } catch { return null; }
+  };
+  const out = [];
+  for (const a of groups.values()) {
+    const base = `archive/${a.projectId}/${a.id}`;
+    out.push(archiveRow(bucket, a, a.hasManifest ? await json(`${base}/manifest.json`) : null, a.hasDrill ? await json(`${base}/drill.json`) : null));
+  }
+  return out;
+}
+
+// restoreNote(bucket, project, id) -> RESTORE.md text, or null.
+export async function restoreNote(bucket, project, id) {
+  try {
+    const [buf] = await storage.bucket(bucket).file(`archive/${project}/${id}/RESTORE.md`).download();
+    return buf.toString('utf8');
+  } catch {
+    return null;
+  }
 }
 
 // storeBytes(bucket): size of the shared file store (files/) that sets in

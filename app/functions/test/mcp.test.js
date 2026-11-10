@@ -109,6 +109,8 @@ function fakeOps() {
     act: async (by, d) => { calls.push(['act', by, d]); if (d.action === 'delete') throw refusal('Not allowed: would leave 2 good sets'); return { ok: true }; },
     preview: async (d) => { calls.push(['preview', d]); return { preview: true }; },
     restoreCommand: async () => ({ command: 'x' }),
+    archives: async () => [{ projectId: 'old-app', archiveId: '20261110T142307Z', drill: { status: 'passed' } }],
+    restoreNote: async (p) => { calls.push(['note', p]); return '# Restore old-app'; },
   };
 }
 
@@ -148,4 +150,14 @@ test('MCP: a refusal comes back as a tool error with its reason', async () => {
   assert.match(r.result.structuredContent.error, /would leave 2 good sets/);
   const unknown = await callTool(fakeOps(), 'drop_database', {});
   assert.equal(unknown.error.code, -32602);
+});
+
+test('MCP: archives are read-only: list_archives and get_restore_note', async () => {
+  const ops = fakeOps();
+  const list = await callTool(ops, 'list_archives', {});
+  assert.equal(list.result.structuredContent.archives[0].projectId, 'old-app');
+  const note = await callTool(ops, 'get_restore_note', { project: 'old-app' });
+  assert.equal(note.result.structuredContent.restoreNote, '# Restore old-app');
+  assert.deepEqual(ops.calls, [['note', 'old-app']]);
+  for (const name of ['list_archives', 'get_restore_note']) assert.equal(TOOLS.find((t) => t.name === name).annotations.readOnlyHint, true);
 });

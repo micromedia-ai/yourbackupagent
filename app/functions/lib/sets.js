@@ -31,6 +31,8 @@ export function summarize(id, manifest, listing = {}) {
     for (const n of Object.values(db.collections || {})) { docs += Number(n) || 0; collections += 1; }
   }
   const files = Object.values(manifest.storage || {}).reduce((a, b) => a + (Number(b.objects) || 0), 0);
+  // Files a changed-mode set refers to in the shared store (files/), not in runs/<id>/.
+  const storeBytes = Object.values(manifest.storage || {}).reduce((a, b) => a + (b && b.mode === 'changed' ? Number(b.bytes) || 0 : 0), 0);
   const started = manifest.startedAt ? Date.parse(manifest.startedAt) : null;
   const finished = manifest.finishedAt ? Date.parse(manifest.finishedAt) : null;
   return {
@@ -40,7 +42,7 @@ export function summarize(id, manifest, listing = {}) {
     startedAt: manifest.startedAt || null,
     finishedAt: manifest.finishedAt || null,
     durationSec: started && finished ? Math.round((finished - started) / 1000) : null,
-    docs, collections, files,
+    docs, collections, files, storeBytes,
     users: manifest.auth ? Number(manifest.auth.users) || 0 : null,
     steps: manifest.steps || {},
     errors: (manifest.errors || []).slice(0, 5).map((e) => String(e).slice(0, 300)),
@@ -83,6 +85,20 @@ export function canDelete(sets, ids, keepMin) {
   return { ok: true, goodAfter: goodNow - goodGone };
 }
 
+// sizeParts(sets, totalBytes) -> {data, offsite, older}: what a project's
+// stored total is made of. sets are merged rows ({status, inProject, inVault,
+// project, vault}). data = one copy of the newest good backup (its own folder
+// plus the store files it refers to); offsite = the same again in the vault
+// when that set is there; older = everything else (older sets and files that
+// were replaced or deleted since, in either place). The three add up to total.
+export function sizeParts(sets, totalBytes = 0) {
+  const newest = [...sets].filter((s) => s.status === 'succeeded').sort((a, b) => (a.id < b.id ? 1 : -1))[0];
+  const one = newest && (newest.project || newest.vault);
+  const data = one ? Math.min(totalBytes, (Number(one.bytes) || 0) + (Number(one.storeBytes) || 0)) : 0;
+  const offsite = newest && newest.inVault && newest.inProject ? Math.min(data, totalBytes - data) : 0;
+  return { data, offsite, older: Math.max(0, totalBytes - data - offsite) };
+}
+
 const gb = (n) => `${(n / 1e9).toFixed(n >= 1e10 ? 0 : 1)} GB`;
 
 // A project whose Backup workflow is turned off in GitHub (Pause in the app):
@@ -92,11 +108,11 @@ export function pausedHealth(h, since = null) {
   return { ...rest, level: 'paused', text: 'Backups paused', pausedSince: since, before: level ? { level, text } : null };
 }
 
-// health(sets, {maxAgeHours, offsite, now, maxSetBytes, maxTotalBytes, totalBytes})
+// health(sets, {maxAgeHours, offsite, now, maxSetBytes, maxTotalBytes, totalBytes, parts})
 //   -> {level: ok|warn|bad, text, notes, ...}. The size limits are "watch"
 //   levels: growing past them is a note for the bell, not a health problem
 //   (the owner sees each project's size and chooses what to keep).
-export function health(sets, { maxAgeHours = 26, offsite = true, now = new Date(), maxSetBytes = 0, maxTotalBytes = 0, totalBytes = 0 } = {}) {
+export function health(sets, { maxAgeHours = 26, offsite = true, now = new Date(), maxSetBytes = 0, maxTotalBytes = 0, totalBytes = 0, parts = null } = {}) {
   const sorted = [...sets].sort((a, b) => (a.id < b.id ? 1 : -1));
   const good = sorted.filter((s) => s.status === 'succeeded');
   if (good.length === 0) return { level: 'bad', text: sorted.length ? 'No good backup' : 'No backups yet', goodCount: 0 };
@@ -109,6 +125,6 @@ export function health(sets, { maxAgeHours = 26, offsite = true, now = new Date(
   const setBytes = newestGood.bytes || 0;
   const notes = [];
   if (maxSetBytes && setBytes > maxSetBytes) notes.push(`Newest set is ${gb(setBytes)} (watch level ${gb(maxSetBytes)})`);
-  if (maxTotalBytes && totalBytes > maxTotalBytes) notes.push(`Backups take ${gb(totalBytes)} (watch level ${gb(maxTotalBytes)})`);
+  if (maxTotalBytes && totalBytes > maxTotalBytes) notes.push(`Backups take ${gb(totalBytes)} (watch level ${gb(maxTotalBytes)})${parts ? `: ${gb(parts.data)} data, ${gb(parts.offsite)} off-site copy, ${gb(parts.older)} older versions` : ''}`);
   return { ...base, level: 'ok', text: 'Healthy', notes };
 }

@@ -88,6 +88,14 @@ export function drillEmail(d, label, appUrl) {
   return { subject, html, text: strip(`${subject}\n${l.detail || ''}\n${appUrl}/log`) };
 }
 
+// " (62 GB data, 62 GB off-site copy, 88 GB older versions)", only when
+// there are older versions or an off-site copy to tell apart.
+export function sizeSplit(t) {
+  const x = t && t.parts;
+  if (!x || !(x.offsite || x.older)) return '';
+  return ` (${bytes(x.data)} data, ${bytes(x.offsite)} off-site copy, ${bytes(x.older)} older versions)`;
+}
+
 // The Monday summary: last 7 days per project.
 export function weeklyEmail(projects, setsByProject, log, appUrl, now = new Date()) {
   const since = now.getTime() - 7 * 86400000;
@@ -99,7 +107,7 @@ export function weeklyEmail(projects, setsByProject, log, appUrl, now = new Date
     good += g; total += sets.length;
     const drills = log.filter((l) => l.project === p.projectId && /^(rebuild|restore) drill/.test(l.action) && ['succeeded', 'failed'].includes(l.status));
     const h = p.health || { level: 'bad', text: 'unknown' };
-    return `<b>${esc(p.label || p.projectId)}</b> ${pill(h.level, h.text)}<br><span style="font-size:13px;color:#5b6964">${g} of ${sets.length} nightly backups good · ${bytes(p.totals?.bytes || 0)} stored · drills: ${drills.filter((d) => d.status === 'succeeded').length} passed, ${drills.filter((d) => d.status === 'failed').length} failed</span>`;
+    return `<b>${esc(p.label || p.projectId)}</b> ${pill(h.level, h.text)}<br><span style="font-size:13px;color:#5b6964">${g} of ${sets.length} nightly backups good · ${bytes(p.totals?.bytes || 0)} stored${sizeSplit(p.totals)} · drills: ${drills.filter((d) => d.status === 'succeeded').length} passed, ${drills.filter((d) => d.status === 'failed').length} failed</span>`;
   });
   const rate = total ? Math.round((100 * good) / total) : 0;
   const subject = `Weekly backups: ${good} of ${total} good (${rate}%) across ${projects.length} project${projects.length === 1 ? '' : 's'}`;

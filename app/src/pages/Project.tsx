@@ -131,6 +131,14 @@ export function ProjectPage({ projectId, user }: { projectId: string; user: User
         </section>
         <section className="panel"><h4>Storage</h4>
           <p>{bytes(p.totals?.bytes || 0)} in {p.totals?.inProject || 0} project and {p.totals?.inVault || 0} vault copies: about <b>${monthlyCost(p.totals?.bytes || 0).toFixed(2)} a month</b>.</p>
+          {p.totals?.parts && (p.totals.parts.offsite > 0 || p.totals.parts.older > 0) && (
+            <ul className="small">
+              <li>{bytes(p.totals.parts.data)} your data: one copy of the newest good backup</li>
+              <li>{bytes(p.totals.parts.offsite)} the off-site copy of it in the vault</li>
+              <li>{bytes(p.totals.parts.older)} older versions: older sets, and files replaced or deleted since, kept {p.keepDays} days here and {p.offsiteKeepDays} in the vault</li>
+            </ul>
+          )}
+          {p.totals?.watchTotalGB ? <p className="small muted">Watch level {p.totals.watchTotalGB} GB{p.sizeWatchGB != null ? ' (SIZE_WATCH_GB in backup.env)' : ' (Settings)'}.</p> : null}
           <p className="small muted">Deleted sets stay recoverable for 30 days (bucket soft delete), and count toward storage until then.</p>
         </section>
       </div>

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { summarize, prunePlan, canDelete, health, cutoffId, runTime } from '../lib/sets.js';
+import { summarize, prunePlan, canDelete, health, cutoffId, runTime, sizeParts } from '../lib/sets.js';
 import { parseEnv, projectSettings, setEnvValue } from '../lib/env.js';
 
 const NOW = new Date('2026-10-24T16:00:00Z');
@@ -73,6 +73,32 @@ test('health: size watch levels are notes, still healthy; 0 turns them off', () 
   assert.equal(health(sets, { now, maxSetBytes: 2e9 }).text, 'Healthy');
   assert.deepEqual(health(sets, { now, maxSetBytes: 3e9, maxTotalBytes: 20e9, totalBytes: 21e9 }).notes, ['Backups take 21 GB (watch level 20 GB)']);
   assert.deepEqual(health(sets, { now, maxSetBytes: 0, maxTotalBytes: 0, totalBytes: 99e9 }).notes, []);
+});
+
+test('size parts: data, off-site copy and older versions add up to the total', () => {
+  // A changed-mode project: 4 MB set folders, 62 GB of files in the shared store.
+  const m = (id) => summarize(id, { status: 'succeeded', storage: { b: { objects: 4000, bytes: 62e9, mode: 'changed' } } }, { bytes: 4e6, hasManifest: true });
+  assert.equal(m('20261115T085436Z').storeBytes, 62e9);
+  assert.equal(summarize('20261115T085436Z', { status: 'succeeded', storage: { b: { objects: 9, bytes: 5e9 } } }, { bytes: 5e9 }).storeBytes, 0); // full mode: files are in the set folder
+  const row = (id, inProject, inVault) => ({ id, status: 'succeeded', inProject, inVault, project: inProject ? m(id) : null, vault: inVault ? m(id) : null });
+  const sets = [row('20261114T084204Z', true, true), row('20261115T085436Z', true, true), row('20261025T190154Z', false, true)];
+  const p = sizeParts(sets, 212e9);
+  assert.deepEqual(p, { data: 62.004e9, offsite: 62.004e9, older: 212e9 - 2 * 62.004e9 });
+  assert.equal(p.data + p.offsite + p.older, 212e9);
+  // No vault copy of the newest set: no off-site part.
+  assert.deepEqual(sizeParts([row('20261115T085436Z', true, false)], 70e9), { data: 62.004e9, offsite: 0, older: 70e9 - 62.004e9 });
+  // Full mode, one set in both places: data + off-site, nothing older.
+  const f = summarize('20261115T085436Z', { status: 'succeeded' }, { bytes: 1e9 });
+  assert.deepEqual(sizeParts([{ ...f, inProject: true, inVault: true, project: f, vault: f }], 2e9), { data: 1e9, offsite: 1e9, older: 0 });
+  assert.deepEqual(sizeParts([], 0), { data: 0, offsite: 0, older: 0 });
+  // The watch note says what the total is made of.
+  const now = new Date('2026-11-15T12:00:00Z');
+  assert.deepEqual(health([{ id: '20261115T085436Z', status: 'succeeded', bytes: 4e6, steps: { offsite: 'ok' } }], { now, maxTotalBytes: 20e9, totalBytes: 212e9, parts: { data: 62e9, offsite: 62e9, older: 88e9 } }).notes,
+    ['Backups take 212 GB (watch level 20 GB): 62 GB data, 62 GB off-site copy, 88 GB older versions']);
+  // A project's own watch level comes from SIZE_WATCH_GB; 0 turns it off; unset = the app's setting.
+  assert.equal(projectSettings(parseEnv('PROJECT_ID=x\nSIZE_WATCH_GB=400\n')).sizeWatchGB, 400);
+  assert.equal(projectSettings(parseEnv('PROJECT_ID=x\nSIZE_WATCH_GB=0\n')).sizeWatchGB, 0);
+  assert.equal(projectSettings(parseEnv('PROJECT_ID=x\nSIZE_WATCH_GB=\n')).sizeWatchGB, null);
 });
 
 test('drill lock: busy until the log line ends or the lock expires', async () => {

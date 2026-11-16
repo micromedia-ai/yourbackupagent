@@ -165,7 +165,7 @@ export function Settings() {
         <p className="small">A full set copies the database and all media, so storage grows with the project (changed-only media copies keep it down; the shared store counts in the total). A project past either level shows as needing attention and, with email alerts on, you get an email. 0 turns a level off.</p>
         <div className="row wrap">
           <label>One set, newest (GB) <input type="number" id="watch-set" min={0} step={0.5} value={watch.set} onChange={(e) => setWatch({ ...watch, set: Number(e.target.value) })} /></label>
-          <label>All sets of a project, here and in the vault (GB) <input type="number" id="watch-total" min={0} step={1} value={watch.total} onChange={(e) => setWatch({ ...watch, total: Number(e.target.value) })} /></label>
+          <label>All sets of a project, here and in the vault (GB; a project can set its own with SIZE_WATCH_GB in backup.env) <input type="number" id="watch-total" min={0} step={1} value={watch.total} onChange={(e) => setWatch({ ...watch, total: Number(e.target.value) })} /></label>
         </div>
         <button className="btn" disabled={!!busy} onClick={() => run('watch', async () => { await call('saveSettings', { sizeWarnSetGB: watch.set, sizeWarnTotalGB: watch.total }); return { text: 'Saved. It applies from the next refresh.' }; })}>Save</button>
       </section>

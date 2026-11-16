@@ -37,7 +37,9 @@ test('emails: subjects, links, no raw html injection', () => {
   const now = new Date('2026-10-24T20:00:00Z');
   const w = weeklyEmail([P('a', 'ok')], { a: [{ id: '20261024T020000Z', status: 'succeeded', inProject: true }, { id: '20261023T020000Z', status: 'failed', inProject: true }, { id: '20261001T020000Z', status: 'succeeded', inProject: true }] }, [], 'https://app', now);
   assert.equal(w.subject, 'Weekly backups: 1 of 2 good (50%) across 1 project');
-  assert.match(w.html, /2.5 GB stored/);
+  assert.match(w.html, /2.5 GB stored ·/);
+  const big = { ...P('a', 'ok'), totals: { bytes: 212e9, parts: { data: 62e9, offsite: 62e9, older: 88e9 } } };
+  assert.match(weeklyEmail([big], {}, [], 'https://app', now).html, /212 GB stored \(62.0 GB data, 62.0 GB off-site copy, 88.0 GB older versions\) ·/);
   assert.match(welcomeEmail('a@b.c', 'd@e.f', 'https://app').text, /Sign in as a@b.c/);
 });
 

@@ -44,6 +44,8 @@ export function projectSettings(env) {
     drillWorkflow: env.DRILL_WORKFLOW || 'rebuild-drill.yml',
     drillParts: env.DRILL_PARTS || '',
     healthPath: env.HEALTH_PATH || '',
+    // This project's size watch level in GB (0 = off); unset = the app's setting.
+    sizeWatchGB: /^[0-9]+$/.test(env.SIZE_WATCH_GB || '') ? Number(env.SIZE_WATCH_GB) : null,
   };
 }
 

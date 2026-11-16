@@ -12,8 +12,8 @@ export type Health = { level: 'ok' | 'warn' | 'bad' | 'paused'; text: string; pa
 export type Project = {
   projectId: string; label: string; repo: string; kitRef: string; backupBucket: string; keepDays: number; keepMinSets: number; storageMode?: 'full' | 'changed';
   maxAgeHours: number; offsiteBucket: string; offsiteKeepDays: number; vaultProject: string; drillProject: string; drillWorkflow: string; siteDrill?: boolean;
-  envLabel?: string; labelInApp?: boolean; parts?: string[]; partsManual?: boolean; detectedParts?: string[] | null; partsWhy?: Record<string, string> | null; drillParts?: string; healthPath?: string;
-  health: Health; paused?: boolean; errors: string[]; refreshedAt?: any; totals?: { sets: number; inProject: number; inVault: number; bytes: number };
+  envLabel?: string; labelInApp?: boolean; parts?: string[]; partsManual?: boolean; detectedParts?: string[] | null; partsWhy?: Record<string, string> | null; drillParts?: string; healthPath?: string; sizeWatchGB?: number | null;
+  health: Health; paused?: boolean; errors: string[]; refreshedAt?: any; totals?: { sets: number; inProject: number; inVault: number; bytes: number; parts?: { data: number; offsite: number; older: number }; watchTotalGB?: number };
   prunePreview?: { id: string; status: string; why: string }[];
 };
 export type Archive = {

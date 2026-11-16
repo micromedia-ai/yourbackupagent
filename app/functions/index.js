@@ -17,7 +17,7 @@ import { github } from './lib/github.js';
 import { listSets, listArchives, restoreNote, deleteSet, drillLabels, runJob, storeBytes, tokenInfo, ownsProject } from './lib/cloud.js';
 import { newestPerProject } from './lib/archives.js';
 import { parseEnv, projectSettings, setEnvValue } from './lib/env.js';
-import { canDelete, health, pausedHealth, prunePlan, RUN_ID } from './lib/sets.js';
+import { canDelete, health, pausedHealth, prunePlan, sizeParts, RUN_ID } from './lib/sets.js';
 import { lockBlocks, endsLock, LOCK_HOURS } from './lib/drilllock.js';
 import { firebaseProject, pickDeploySecret, kitFiles, setupCommands, TEMPLATE_PATHS, KIT_REPO } from './lib/protect.js';
 import { readSiteFacts, drillWorkflow, signIn } from './lib/drill.js';
@@ -141,11 +141,13 @@ async function refreshProject(gh, repo, s = null) {
   const store = await Promise.all([p.backupBucket, p.offsiteBucket].filter(Boolean).map((b) => storeBytes(b).catch((e) => { errors.push(`gs://${b}/files: ${e.message}`); return 0; })));
   const storeTotal = store.reduce((a, x) => a + x, 0);
   const totalBytes = sets.reduce((a, x) => a + x.bytes, 0) + storeTotal;
+  const parts = sizeParts(sets, totalBytes);
+  const watchTotalGB = p.sizeWatchGB ?? s.sizeWarnTotalGB ?? 0;
   // Pause turns the repo's Backup workflow off in GitHub; that is the one switch, read back here.
   const wf = await gh.workflowState(p.repo, BACKUP_WORKFLOW).catch((e) => { errors.push(`backup workflow: ${e.message}`); return null; });
   const paused = Boolean(wf && String(wf.state).startsWith('disabled'));
   const h0 = inProject
-    ? health(projectSetsOnly, { maxAgeHours: p.maxAgeHours, offsite: Boolean(p.offsiteBucket), maxSetBytes: (s.sizeWarnSetGB || 0) * 1e9, maxTotalBytes: (s.sizeWarnTotalGB || 0) * 1e9, totalBytes })
+    ? health(projectSetsOnly, { maxAgeHours: p.maxAgeHours, offsite: Boolean(p.offsiteBucket), maxSetBytes: (s.sizeWarnSetGB || 0) * 1e9, maxTotalBytes: watchTotalGB * 1e9, totalBytes, parts })
     : { level: 'bad', text: 'Cannot read the backup bucket' };
   const h = paused ? pausedHealth(h0, wf.updatedAt) : h0;
   const { envText, ...rest } = p;
@@ -159,7 +161,7 @@ async function refreshProject(gh, repo, s = null) {
     ...rest, envText, health: h, paused, errors, siteDrill, envLabel: rest.label, label: named || rest.label, labelInApp: Boolean(named),
     parts: eff.parts, partsManual: eff.manual, detectedParts: detected ? detected.parts : null, partsWhy: detected ? detected.why : null,
     refreshedAt: FieldValue.serverTimestamp(),
-    totals: { sets: sets.length, inProject: projectSetsOnly.length, inVault: (inVault || []).length, bytes: totalBytes, storeBytes: storeTotal },
+    totals: { sets: sets.length, inProject: projectSetsOnly.length, inVault: (inVault || []).length, bytes: totalBytes, storeBytes: storeTotal, parts, watchTotalGB },
     prunePreview: inProject ? prunePlan(projectSetsOnly, { keepMin: p.keepMinSets, keepDays: p.keepDays }) : [],
   }, { merge: false });
   await batch.commit();

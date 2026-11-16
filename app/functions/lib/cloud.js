@@ -47,7 +47,8 @@ export async function listSets(bucket, known = new Map()) {
   const out = [];
   for (const [id, listing] of runs) {
     const old = known.get(id);
-    if (old && old.bytes === listing.bytes && (old.status === 'succeeded' || old.status === 'failed')) {
+    // Summaries from before storeBytes existed are read once more.
+    if (old && old.bytes === listing.bytes && 'storeBytes' in old && (old.status === 'succeeded' || old.status === 'failed')) {
       out.push(old);
       continue;
     }
